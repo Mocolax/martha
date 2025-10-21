@@ -24,7 +24,6 @@ setup(
     entry_points={
         'console_scripts': [
             'movimiento = martha.movimiento:main',
-            'controlRead = martha.controlRead:main'
         ],
     },
 )

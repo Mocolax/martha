@@ -13,6 +13,11 @@ def generate_launch_description():
             executable='movimiento',
             name='movimiento'
         ),
+        Node(
+            package='robot_state_publisher',
+            executable='robot_state_publisher',
+            parameters=[{'robot_description': open('src/martha/urdf/martha.urdf').read()}]
+        )
     ])
     
     

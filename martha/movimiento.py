@@ -1,74 +1,51 @@
 import time
-import serial
 import struct
 import rclpy
 from rclpy.node import Node
+from martha.serialCom import Serialhandler
+from martha.odometry import Odometria
+
 from sensor_msgs.msg import Joy
+from nav_msgs.msg import Odometry
+from geometry_msgs.msg import Quaternion, Point, Pose, PoseWithCovariance, Twist, TwistWithCovariance
+import math
+
+
+from tf2_ros import TransformBroadcaster
+
 
 # Use with: ros2 run joy joy_node
 
 class movimiento(Node):
 	def __init__(self):
 		super().__init__('Movimiento')
-		self.get_logger().info("Nodo Movimiento iniciado")
-		self.subscription = self.create_subscription(
-			Joy,
-			'joy',
-			self.listener_callback,
-			10
-		)
+  
+		self.subscription = self.create_subscription(Joy,'joy', self.listener_callback, 10)
 		self.subscription
-		self.get_logger().info("Nodo Test suscrito al tópico 'teclas'.")
-		self.ser = serial.Serial('/dev/ttyACM1', 115200, timeout=0.0025)
-		#self.timer = self.create_timer(0.1, self.leer_serial)
   
-	def listener_callback(self, msg):
-		self.enviar_serial(msg.axes[1], msg.axes[0], msg.axes[2])
-		self.leer_serial()
-	
-	def enviar_serial(self, x, y, z):
-		message = struct.pack(
-				'dddddd',
-				x/3,      # x
-				-y/3,     # y
-				-z,    # z
-				False,      # start_button
-				False,       # back_button
-				9912399
-			)	
-		self.ser.write(message)
-		time.sleep(0.01)
+		self.ser = Serialhandler()
   
-	def leer_serial(self):
-		
-		s = self.ser.read(112)        # read up to ten bytes (timeout)
-		if len(s) == 112:
-			px = struct.unpack('d',s[0:8])[0]
-			py = struct.unpack('d',s[8:16])[0]
-			rz = struct.unpack('d',s[16:24])[0]
+		self.odom_pub = self.create_publisher(Odometry, '/odom', 10)
+		self.odom_proc = Odometria()
+  
+		self.tf_broadcaster = TransformBroadcaster(self)
 
-			vx_read = struct.unpack('d',s[24:32])[0]
-			vy_read = struct.unpack('d',s[32:40])[0]
-			wz_read = struct.unpack('d',s[40:48])[0]
 
-			velWheel1 = struct.unpack('d',s[48:56])[0]
-			velWheel2 = struct.unpack('d',s[56:64])[0]
-			velWheel3 = struct.unpack('d',s[64:72])[0]
-			velWheel4 = struct.unpack('d',s[72:80])[0]
+	def listener_callback(self, msg_ctrl):
+		self.get_logger().info(f"Vx = {msg_ctrl.axes[1]}, Vy = {msg_ctrl.axes[0]}, Wz = {msg_ctrl.axes[2]}")
+  
+		self.ser.serialSend(msg_ctrl.axes[1], msg_ctrl.axes[0], msg_ctrl.axes[2])
+		x, y, th, vx, vy, wz = self.ser.serialRead()
 
-			control1 = struct.unpack('d',s[80:88])[0]
-			control2 = struct.unpack('d',s[88:96])[0]
-			control3 = struct.unpack('d',s[96:104])[0]
-			control4 = struct.unpack('d',s[104:112])[0]
+		msg_odom, t = self.odom_proc.Process_Odometry(x, y, th, vx, vy, wz)
+		msg_odom.header.stamp = self.get_clock().now().to_msg()
+		t.header.stamp = self.get_clock().now().to_msg()
+  
+		self.odom_pub.publish(msg_odom)
+		self.tf_broadcaster.sendTransform(t)
 
-			vx  = vx_read
-			vy  = vy_read
-			vth = wz_read
-
-			self.get_logger().info(f"Vx = {vx}, Vy = {vy}, Wz = {vth}")
-		else:
-			self.get_logger().info("Not enough bytes")
-     
+  
+   
 def main(args=None):
 	rclpy.init(args=args)
 	nodo = movimiento()
@@ -77,17 +54,7 @@ def main(args=None):
 	except KeyboardInterrupt:
 		pass
 	finally:
-		message = struct.pack(
-				'dddddd',
-				0.0,      # x
-				0.0,     # y
-				0.0,    # z
-				False,      # start_button
-				False,       # back_button
-				9912399
-			)
-		nodo.ser.write(message)
-		nodo.ser.close()
+		nodo.ser.serialClose()
 		nodo.destroy_node()
 		rclpy.shutdown()
    
