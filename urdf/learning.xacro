@@ -1,0 +1,313 @@
+<?xml version="1.0"?>
+<!-- ros2 run xacro xacro urdf/learning.xacro -o /tmp/learning.urdf -->
+    
+<robot name="Martha" xmlns:xacro="http://www.ros.org/wiki/xacro">
+    
+    <!--····························································· COLORS ·····························································-->
+
+    <material name="black">
+        <color rgba="0 0 0 1" />
+    </material>
+    <material name="grey">
+        <color rgba="0.7 0.7 0.7 1" />
+    </material>
+    <material name="red">
+        <color rgba="1 0 0 1" />
+    </material>
+
+    <!--····························································· PROPERTIES ·····························································-->
+
+    <xacro:property name="base_front_x" value="0.160" />
+    <xacro:property name="base_center_x" value="0.238" />
+    <xacro:property name="base_rear_x" value="0.160" />
+    <xacro:property name="base_narrow_y" value="0.240" />
+    <xacro:property name="base_center_y" value="0.410" />
+    <xacro:property name="base_x" value="${base_front_x + base_center_x + base_rear_x}" />
+    <xacro:property name="base_y" value="${base_center_y}" />
+    <xacro:property name="base_z" value="0.025" />
+    <xacro:property name="height_0" value="0.125" />
+    <xacro:property name="height_1" value="0.205" />
+    <xacro:property name="height_2" value="0.004" />
+    <xacro:property name="height_3" value="0.004" />
+    <xacro:property name="wheel_length" value="0.045" />
+    <xacro:property name="wheel_radius" value="0.075" />
+    <xacro:property name="hub_radius" value="0.045" />
+    <xacro:property name="roller_count" value="12" />
+    <xacro:property name="roller_radius" value="0.014" />
+    <xacro:property name="roller_length" value="0.040" />
+    <xacro:property name="roller_mount_radius" value="0.065" />
+    <xacro:property name="roller_angle" value="0.785398" />
+    <xacro:property name="lidar_length" value="0.04" />
+    <xacro:property name="lidar_radius" value="0.0475"/>
+    <xacro:property name="wheel_pos_x" value="0.21" />
+    <xacro:property name="wheel_pos_y" value="0.175" />
+    <xacro:property name="wheel_pos_z" value="0.08" />
+
+    <!--····························································· BASE_LINK ·····························································-->
+    <link name="base_link">
+    <visual>
+        <origin xyz="${base_center_x/2 + base_front_x/2} 0 ${height_0}"/>
+        <geometry>
+        <box size="${base_front_x} ${base_narrow_y} ${base_z}"/>
+        </geometry>
+        <material name="grey"/>
+    </visual>
+
+    <visual>
+        <origin xyz="0 0 ${height_0}"/>
+        <geometry>
+        <box size="${base_center_x} ${base_center_y} ${base_z}"/>
+        </geometry>
+        <material name="grey"/>
+    </visual>
+
+    <visual>
+        <origin xyz="${-(base_center_x/2 + base_rear_x/2)} 0 ${height_0}"/>
+        <geometry>
+        <box size="${base_rear_x} ${base_narrow_y} ${base_z}"/>
+        </geometry>
+        <material name="grey"/>
+    </visual>
+
+    <collision>
+        <origin xyz="${base_center_x/2 + base_front_x/2} 0 ${height_0}"/>
+        <geometry>
+        <box size="${base_front_x} ${base_narrow_y} ${base_z}"/>
+        </geometry>
+    </collision>
+
+    <collision>
+        <origin xyz="0 0 ${height_0}"/>
+        <geometry>
+        <box size="${base_center_x} ${base_center_y} ${base_z}"/>
+        </geometry>
+    </collision>
+
+    <collision>
+        <origin xyz="${-(base_center_x/2 + base_rear_x/2)} 0 ${height_0}"/>
+        <geometry>
+        <box size="${base_rear_x} ${base_narrow_y} ${base_z}"/>
+        </geometry>
+    </collision>
+
+    <inertial>
+        <mass value="20"/>
+        <inertia ixx="0.1" iyy="0.1" izz="0.1"
+                ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    </link>
+
+    <!--····························································· LIDAR ·····························································-->
+    
+    <link name="lidar">
+        <visual>
+            <geometry>
+                <cylinder length="${lidar_length}" radius="${lidar_radius}"/>
+            </geometry>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <material name="red" />
+        </visual>
+
+        <collision>
+            <geometry>
+                <cylinder length="${lidar_length}" radius="${lidar_radius}"/>
+            </geometry>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+        </collision>
+        <inertial>
+            <mass value="0.1"/>
+            <inertia ixx="1e-4" ixy="0.0" ixz="0.0" iyy="1e-4" iyz="0.0" izz="1e-4"/>
+        </inertial>
+   
+    </link>
+    <joint name="base_lidar" type="fixed">
+        <parent link="base_link" />
+        <child link="lidar" />
+        <origin xyz="${base_x/2 - lidar_radius/2} 0 ${height_0 + lidar_length/2 + 0.02}"/>
+    </joint>
+
+    <!--····························································· WHEELS ····························································-->
+
+    <xacro:macro name="mecanum_roller" params="wheel_name index x y yaw pitch">
+        <link name="${wheel_name}_roller_${index}">
+            <visual>
+                <geometry>
+                    <cylinder length="${roller_length}" radius="${roller_radius}" />
+                </geometry>
+                <material name="black">
+                    <color rgba="0 0 0 1"/>
+                </material>
+            </visual>
+
+            <collision>
+                <geometry>
+                    <cylinder length="${roller_length}" radius="${roller_radius}" />
+                </geometry>
+            </collision>
+
+            <inertial>
+                <mass value="0.03"/>
+                <inertia ixx="0.00002" ixy="0.0" ixz="0.0" iyy="0.00002" iyz="0.0" izz="0.00001"/>
+            </inertial>
+        </link>
+
+        <joint name="${wheel_name}_roller_${index}_joint" type="continuous">
+            <parent link="${wheel_name}_wheel" />
+            <child link="${wheel_name}_roller_${index}" />
+            <origin
+                xyz="${x} ${y} 0"
+                rpy="0 ${pitch} ${yaw}" />
+            <axis xyz="0 0 1" />
+            <dynamics damping="0.01" friction="0.0" />
+        </joint>
+
+        <gazebo reference="${wheel_name}_roller_${index}">
+            <material>Gazebo/Black</material>
+            <mu1>1.0</mu1>
+            <mu2>1.0</mu2>
+            <kp>100000.0</kp>
+            <kd>1.0</kd>
+            <minDepth>0.001</minDepth>
+            <maxVel>0.1</maxVel>
+        </gazebo>
+    </xacro:macro>
+
+    <xacro:macro name="mecanum_wheel" params="name x y z pitch">
+        <link name="${name}_wheel">
+            <visual>
+                <geometry>
+                    <cylinder length="${wheel_length}" radius="${hub_radius}" />
+                </geometry>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <material name="grey" />
+            </visual>
+            
+            <collision>
+                <geometry>
+                    <cylinder length="${wheel_length}" radius="${hub_radius}" />
+                </geometry>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+            </collision>
+            <inertial>
+                <mass value="0.5"/>
+                <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.01"/>
+            </inertial>
+       
+        </link>
+
+        <joint name="base_${name}_wheel_joint" type="continuous">
+            <parent link="base_link" />
+            <child link="${name}_wheel" />
+            <origin xyz="${x} ${y} ${z}" rpy="1.57 0 0" />
+            <axis xyz="0 0 -1" />
+        </joint>
+
+        <xacro:mecanum_roller wheel_name="${name}" index="00" x="${roller_mount_radius}" y="0" yaw="1.570796" pitch="${pitch}" />
+        <xacro:mecanum_roller wheel_name="${name}" index="01" x="${roller_mount_radius * 0.866025}" y="${roller_mount_radius * 0.5}" yaw="2.094395" pitch="${pitch}" />
+        <xacro:mecanum_roller wheel_name="${name}" index="02" x="${roller_mount_radius * 0.5}" y="${roller_mount_radius * 0.866025}" yaw="2.617994" pitch="${pitch}" />
+        <xacro:mecanum_roller wheel_name="${name}" index="03" x="0" y="${roller_mount_radius}" yaw="3.141593" pitch="${pitch}" />
+        <xacro:mecanum_roller wheel_name="${name}" index="04" x="${-roller_mount_radius * 0.5}" y="${roller_mount_radius * 0.866025}" yaw="-2.617994" pitch="${pitch}" />
+        <xacro:mecanum_roller wheel_name="${name}" index="05" x="${-roller_mount_radius * 0.866025}" y="${roller_mount_radius * 0.5}" yaw="-2.094395" pitch="${pitch}" />
+        <xacro:mecanum_roller wheel_name="${name}" index="06" x="${-roller_mount_radius}" y="0" yaw="-1.570796" pitch="${pitch}" />
+        <xacro:mecanum_roller wheel_name="${name}" index="07" x="${-roller_mount_radius * 0.866025}" y="${-roller_mount_radius * 0.5}" yaw="-1.047198" pitch="${pitch}" />
+        <xacro:mecanum_roller wheel_name="${name}" index="08" x="${-roller_mount_radius * 0.5}" y="${-roller_mount_radius * 0.866025}" yaw="-0.523599" pitch="${pitch}" />
+        <xacro:mecanum_roller wheel_name="${name}" index="09" x="0" y="${-roller_mount_radius}" yaw="0" pitch="${pitch}" />
+        <xacro:mecanum_roller wheel_name="${name}" index="10" x="${roller_mount_radius * 0.5}" y="${-roller_mount_radius * 0.866025}" yaw="0.523599" pitch="${pitch}" />
+        <xacro:mecanum_roller wheel_name="${name}" index="11" x="${roller_mount_radius * 0.866025}" y="${-roller_mount_radius * 0.5}" yaw="1.047198" pitch="${pitch}" />
+    </xacro:macro>
+
+    <xacro:mecanum_wheel name="front_left" x="${wheel_pos_x}" y="${wheel_pos_y}" z="${wheel_pos_z}" pitch="${roller_angle}" />
+    <xacro:mecanum_wheel name="front_right" x="${wheel_pos_x}" y="${-wheel_pos_y}" z="${wheel_pos_z}" pitch="${pi - roller_angle}" />
+    <xacro:mecanum_wheel name="rear_left" x="${-wheel_pos_x}" y="${wheel_pos_y}" z="${wheel_pos_z}" pitch="${pi - roller_angle}" />
+    <xacro:mecanum_wheel name="rear_right" x="${-wheel_pos_x}" y="${-wheel_pos_y}" z="${wheel_pos_z}" pitch="${roller_angle}" />
+
+
+    <ros2_control name="GazeboSystem" type="system">
+    <hardware>
+        <plugin>gazebo_ros2_control/GazeboSystem</plugin>
+    </hardware>
+
+
+    <joint name="base_front_right_wheel_joint">
+        <command_interface name="velocity"/>
+        <state_interface name="velocity"/>
+        <state_interface name="position"/>
+    </joint>
+
+    <joint name="base_front_left_wheel_joint">
+        <command_interface name="velocity"/>
+        <state_interface name="velocity"/>
+        <state_interface name="position"/>
+    </joint>
+
+    <joint name="base_rear_left_wheel_joint">
+        <command_interface name="velocity"/>
+        <state_interface name="velocity"/>
+        <state_interface name="position"/>
+    </joint>
+
+    <joint name="base_rear_right_wheel_joint">
+        <command_interface name="velocity"/>
+        <state_interface name="velocity"/>
+        <state_interface name="position"/>
+    </joint>
+    </ros2_control>
+
+  <gazebo>
+    <plugin name="gazebo_ros2_control" filename="libgazebo_ros2_control.so">
+      <parameters>$(find martha)/config/controllers.yaml</parameters>
+    </plugin>
+  </gazebo>
+
+  <gazebo reference="base_link">
+  	<material>Gazebo/Red</material>
+  </gazebo>
+  <gazebo reference="front_left_wheel">
+  	<material>Gazebo/Black</material>
+  </gazebo>
+  <gazebo reference="front_right_wheel">
+  	<material>Gazebo/Black</material>
+  </gazebo>
+  <gazebo reference="rear_left_wheel">
+  	<material>Gazebo/Black</material>
+  </gazebo>
+  <gazebo reference="rear_right_wheel">
+  	<material>Gazebo/Black</material>
+  </gazebo>
+  <gazebo reference="lidar">
+  	<material>Gazebo/Green</material>
+    <sensor name="lidar_sensor" type="ray">
+      <always_on>true</always_on>
+      <visualize>true</visualize>
+      <update_rate>10</update_rate>
+      <ray>
+        <scan>
+          <horizontal>
+            <samples>360</samples>
+            <resolution>1</resolution>
+            <min_angle>${-pi}</min_angle>
+            <max_angle>${pi}</max_angle>
+          </horizontal>
+        </scan>
+        <range>
+          <min>0.12</min>
+          <max>8.0</max>
+          <resolution>0.01</resolution>
+        </range>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.01</stddev>
+        </noise>
+      </ray>
+      <plugin name="gazebo_ros_lidar" filename="libgazebo_ros_ray_sensor.so">
+        <ros>
+          <remapping>~/out:=/scan</remapping>
+        </ros>
+        <output_type>sensor_msgs/LaserScan</output_type>
+        <frame_name>lidar</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+</robot>
