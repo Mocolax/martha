@@ -29,6 +29,7 @@ setup(
         'console_scripts': [
             'cmd_vel_to_twist_stamped = martha.cmd_vel_to_twist_stamped:main',
             'odom_tf_broadcaster = martha.odom_tf_broadcaster:main',
+            'imu_serial_viewer = martha.imu_serial_viewer:main',
         ],
     },
 )

@@ -29,7 +29,7 @@ def generate_launch_description():
     world_file = PathJoinSubstitution([
         FindPackageShare(package_name),
         'worlds',
-        'mundo_2.world',
+        'mundo_3.world',
     ])
 
     world_arg = DeclareLaunchArgument(
@@ -126,11 +126,20 @@ def generate_launch_description():
         output='screen',
     )
 
-    odom_tf_broadcaster_node = Node(
-        package=package_name,
-        executable='odom_tf_broadcaster',
-        name='odom_tf_broadcaster',
-        parameters=[{'use_sim_time': True}],
+    ekf_params_file = PathJoinSubstitution([
+        FindPackageShare(package_name),
+        'config',
+        'ekf.yaml',
+    ])
+
+    ekf_node = Node(
+        package='robot_localization',
+        executable='ekf_node',
+        name='ekf_filter_node',
+        parameters=[
+            ekf_params_file,
+            {'use_sim_time': True},
+        ],
         output='screen',
     )
 
@@ -177,7 +186,7 @@ def generate_launch_description():
         urdf_spawner_node,
         controller_spawners,
         cmd_vel_adapter_node,
-        odom_tf_broadcaster_node,
+        ekf_node,
         slam_toolbox_launch,
         rviz_node,
     ])

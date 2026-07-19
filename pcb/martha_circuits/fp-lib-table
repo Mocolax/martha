@@ -1,0 +1,5 @@
+(fp_lib_table
+	(version 7)
+	(lib (name "ESP32_dev_module") (type "KiCad") (uri "${KIPRJMOD}/ESP32_dev_module.pretty") (options "") (descr ""))
+	(lib (name "Pololu_Driver") (type "KiCad") (uri "/home/mocolax/ros2_ws/src/martha/pcb/Pololu_Driver.pretty") (options "") (descr ""))
+)

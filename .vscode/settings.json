@@ -1,0 +1,6 @@
+{
+  "files.associations": {
+    "*.ino": "cpp"
+  },
+  "C_Cpp.default.configuration": "Arduino ESP32"
+}
