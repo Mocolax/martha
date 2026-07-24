@@ -6,14 +6,16 @@
 // ======================================================
 // IMU CONFIG
 // ======================================================
-static const int I2C_SDA_PIN = 21;
-static const int I2C_SCL_PIN = 22;
+static const int I2C_SDA_PIN = 22;
+static const int I2C_SCL_PIN = 21;
 static const unsigned long IMU_PERIOD_MS = 20;
 
 // ======================================================
 // MOTOR CONTROL CONFIG
 // ======================================================
 static const int MOTOR_SLEEP_PIN = 2;
+static const int MOTOR_OVERCURRENT_PIN = 23;
+static const int MOTOR_OVERCURRENT_ACTIVE_LEVEL = LOW;
 static const uint8_t MOTOR_COUNT = 4;
 static const float COUNTS_PER_REV = 3200.0f;
 static const float CONTROL_TS = 0.01f;
@@ -48,17 +50,17 @@ struct MotorPins
 };
 
 EncoderPins encoderPins[MOTOR_COUNT] = {
-    {34, 35},
-    {36, 39},
-    {32, 33},
+    {14, 27},
+    {39, 36},
+    {13, 12},
     {18, 19},
 };
 
 MotorPins motorPins[MOTOR_COUNT] = {
-    {25, 26, 0, 1},
-    {27, 14, 2, 3},
-    {16, 17, 4, 5},
-    {23, 13, 6, 7},
+    {26, 25, 0, 1},
+    {33, 32, 2, 3},
+    {4, 16, 4, 5},
+    {17, 5, 6, 7},
 };
 
 // ======================================================
@@ -72,6 +74,7 @@ float referencesRpm[MOTOR_COUNT];
 float rpmValues[MOTOR_COUNT];
 float pwmValues[MOTOR_COUNT];
 int8_t motorDirections[MOTOR_COUNT];
+bool motorOvercurrentLatched = false;
 
 unsigned long lastImuReadMs = 0;
 unsigned long lastControlMs = 0;
@@ -103,6 +106,7 @@ void setup()
 void loop()
 {
   readSerialReference();
+  checkMotorProtection();
   updateMotorControl();
   publishImu();
 }
@@ -248,7 +252,7 @@ void readSerialReference()
       if (serialBufferLength > 0)
       {
         serialBuffer[serialBufferLength] = '\0';
-        setAllReferences(atof(serialBuffer));
+        processSerialCommand(serialBuffer);
         serialBufferLength = 0;
       }
       continue;
@@ -264,6 +268,17 @@ void readSerialReference()
       Serial.println("REF_ERROR: line too long");
     }
   }
+}
+
+void processSerialCommand(const char* command)
+{
+  if (strcmp(command, "reset") == 0 || strcmp(command, "RESET") == 0)
+  {
+    resetMotorProtection();
+    return;
+  }
+
+  setAllReferences(atof(command));
 }
 
 void setAllReferences(float referenceRpm)
@@ -282,6 +297,7 @@ void setAllReferences(float referenceRpm)
 // ======================================================
 void initMotors()
 {
+  pinMode(MOTOR_OVERCURRENT_PIN, INPUT_PULLUP);
   pinMode(MOTOR_SLEEP_PIN, OUTPUT);
   digitalWrite(MOTOR_SLEEP_PIN, LOW);
 
@@ -290,6 +306,13 @@ void initMotors()
     attachMotorPwm(motorPins[i].pwm1, motorPins[i].channel1);
     attachMotorPwm(motorPins[i].pwm2, motorPins[i].channel2);
     writeMotorPin(i, 0, 0);
+  }
+
+  if (isMotorOvercurrentActive())
+  {
+    motorOvercurrentLatched = true;
+    Serial.println("motor_overcurrent");
+    return;
   }
 
   digitalWrite(MOTOR_SLEEP_PIN, HIGH);
@@ -434,11 +457,58 @@ void stopAllMotors()
   }
 }
 
+bool isMotorOvercurrentActive()
+{
+  return digitalRead(MOTOR_OVERCURRENT_PIN) == MOTOR_OVERCURRENT_ACTIVE_LEVEL;
+}
+
+void checkMotorProtection()
+{
+  if (motorOvercurrentLatched)
+  {
+    return;
+  }
+
+  if (!isMotorOvercurrentActive())
+  {
+    return;
+  }
+
+  latchMotorOvercurrent();
+}
+
+void latchMotorOvercurrent()
+{
+  motorOvercurrentLatched = true;
+  stopAllMotors();
+  digitalWrite(MOTOR_SLEEP_PIN, LOW);
+  Serial.println("motor_overcurrent");
+}
+
+void resetMotorProtection()
+{
+  if (isMotorOvercurrentActive())
+  {
+    Serial.println("motor_overcurrent_reset_blocked");
+    return;
+  }
+
+  motorOvercurrentLatched = false;
+  digitalWrite(MOTOR_SLEEP_PIN, HIGH);
+  startMotorControl();
+  Serial.println("motor_overcurrent_reset");
+}
+
 // ======================================================
 // PI CONTROL
 // ======================================================
 void updateMotorControl()
 {
+  if (motorOvercurrentLatched)
+  {
+    return;
+  }
+
   const unsigned long now = millis();
   if (now - lastControlMs < CONTROL_PERIOD_MS)
   {
