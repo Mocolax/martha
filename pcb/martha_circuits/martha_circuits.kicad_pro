@@ -65,8 +65,8 @@
           "min_thickness": 0.25,
           "pad_connection": 1,
           "remove_islands": 0,
-          "thermal_relief_gap": 0.5,
-          "thermal_relief_spoke_width": 0.5
+          "thermal_relief_gap": 0.6,
+          "thermal_relief_spoke_width": 0.8
         }
       },
       "diff_pair_dimensions": [
@@ -549,8 +549,9 @@
     "last_paths": {
       "idf": "",
       "netlist": "",
-      "plot": "",
+      "plot": "/home/mocolax/ros2_ws/src/martha/pcb/martha_circuits/Gerbers/",
       "specctra_dsn": "",
+      "step": "",
       "vrml": ""
     },
     "page_layout_descr_file": ""
@@ -559,7 +560,7 @@
     "annotate_start_num": 0,
     "annotation": {
       "method": 0,
-      "sort_order": 0
+      "sort_order": 1
     },
     "bom_export_filename": "${PROJECTNAME}.csv",
     "bom_fmt_presets": [],
@@ -661,6 +662,14 @@
     "meta": {
       "version": 1
     },
+    "ngspice": {
+      "fix_include_paths": true,
+      "meta": {
+        "version": 0
+      },
+      "model_mode": 4,
+      "workbook_filename": ""
+    },
     "page_layout_descr_file": "",
     "plot_directory": "",
     "reuse_designators": true,
@@ -673,7 +682,7 @@
         "uuid": "8a0047e5-3410-40b2-9332-77237a152757"
       }
     ],
-    "used_designators": "#FLG1,D1-4,C1-2,R1-10,SW1,RV1,#PWR1-56,47k1,J1-6,Q1,U1-6",
+    "used_designators": "U1-6,Q1,J1-6,47k1,#PWR1-58,RV1,SW1,R1-10,C1-2,D1-4,#FLG1-2",
     "variants": []
   },
   "sheets": [

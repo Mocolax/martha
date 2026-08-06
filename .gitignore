@@ -1,0 +1,12 @@
+# PPO outputs are reproducible artifacts, not source files.
+martha/PPO/runs/
+ppo_runs/
+*.pt
+
+# Local Python and ROS build artifacts.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+build/
+install/
+log/

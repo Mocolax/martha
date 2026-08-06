@@ -1,0 +1,21 @@
+cmd_vel_serial_bridge:
+  ros__parameters:
+    use_sim_time: false
+    port: /dev/ttyUSB0
+    baud: 115200
+    input_topic: /cmd_vel
+    odometry_topic: /wheel/odometry
+    imu_topic: /imu/data
+    joint_state_topic: /joint_states
+    diagnostic_topic: /diagnostics
+    fault_topic: /hardware/motor_fault
+    odom_frame: odom
+    base_frame: base_link
+    imu_frame: imu_link
+    log_serial: false
+    # Mismo limite de accion que el entorno y la politica PPO.
+    max_vx: 0.35
+    max_vy: 0.35
+    max_wz: 0.80
+    serial_timeout: 1.0
+    startup_grace: 3.0

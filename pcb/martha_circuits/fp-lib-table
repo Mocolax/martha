@@ -2,4 +2,6 @@
 	(version 7)
 	(lib (name "ESP32_dev_module") (type "KiCad") (uri "${KIPRJMOD}/ESP32_dev_module.pretty") (options "") (descr ""))
 	(lib (name "Pololu_Driver") (type "KiCad") (uri "/home/mocolax/ros2_ws/src/martha/pcb/Pololu_Driver.pretty") (options "") (descr ""))
+	(lib (name "Library") (type "KiCad") (uri "/home/mocolax/ros2_ws/src/martha/pcb/My_Components.pretty/Library.pretty") (options "") (descr ""))
+	(lib (name "My_Components") (type "KiCad") (uri "/home/mocolax/ros2_ws/src/martha/pcb/My_Components.pretty/My_Components.pretty") (options "") (descr ""))
 )

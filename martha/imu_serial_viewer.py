@@ -288,12 +288,36 @@ def print_diagnostics(state, previous_counts, now):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Visualiza la orientacion del IMU por serial.")
-    parser.add_argument("--port", default="/dev/ttyUSB0", help="Puerto serial del ESP32.")
-    parser.add_argument("--baud", type=int, default=115200, help="Baudios del sketch Arduino.")
-    parser.add_argument("--stdin", action="store_true", help="Lee datos desde stdin en vez de serial.")
-    parser.add_argument("--render-rate", type=float, default=25.0, help="FPS maximos del visor.")
-    parser.add_argument("--no-diagnostics", action="store_true", help="No imprime Hz/FPS por consola.")
+    parser = argparse.ArgumentParser(
+        description="Visualiza la orientacion del IMU por serial."
+    )
+    parser.add_argument(
+        "--port",
+        default="/dev/ttyUSB0",
+        help="Puerto serial del ESP32.",
+    )
+    parser.add_argument(
+        "--baud",
+        type=int,
+        default=115200,
+        help="Baudios del sketch Arduino.",
+    )
+    parser.add_argument(
+        "--stdin",
+        action="store_true",
+        help="Lee datos desde stdin en vez de serial.",
+    )
+    parser.add_argument(
+        "--render-rate",
+        type=float,
+        default=25.0,
+        help="FPS maximos del visor.",
+    )
+    parser.add_argument(
+        "--no-diagnostics",
+        action="store_true",
+        help="No imprime Hz/FPS por consola.",
+    )
     args = parser.parse_args()
 
     if args.render_rate <= 0.0:

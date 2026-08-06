@@ -9,6 +9,10 @@
     <gravity>0 0 -9.81</gravity>
     <include><uri>model://sun</uri></include>
     <include><uri>model://ground_plane</uri></include>
+    <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so">
+      <ros><namespace>/gazebo</namespace></ros>
+      <update_rate>50.0</update_rate>
+    </plugin>
 
     <!-- Arena center: (1.0, -0.8). -->
     <model name="wall_left"><static>true</static><pose>1.0 2.2 0.5 0 0 0</pose><link name="link"><collision name="collision"><geometry><box><size>6 0.1 1</size></box></geometry></collision><visual name="visual"><geometry><box><size>6 0.1 1</size></box></geometry></visual></link></model>

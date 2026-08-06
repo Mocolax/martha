@@ -126,7 +126,9 @@
     <joint name="base_lidar" type="fixed">
         <parent link="base_link" />
         <child link="lidar" />
-        <origin xyz="${base_x/2 - lidar_radius/2} 0 ${height_0 + lidar_length/2 + 0.02}"/>
+        <!-- El frame coincide con el plano de escaneo sobre la placa base.
+             Incluir base_z/2 evita que el rayo vea el propio imu_link. -->
+        <origin xyz="${base_x/2 - lidar_radius/2} 0 ${height_0 + base_z/2 + lidar_length/2 + 0.02}"/>
     </joint>
 
     <!--····························································· IMU ·····························································-->

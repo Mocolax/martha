@@ -1,26 +1,48 @@
 #include "EncoderPCNT.h"
 #include "ImuMpu6050.h"
+#include "MecanumKinematics.h"
+#include "MecanumOdometry.h"
 #include "PIController.h"
 #include "esp_arduino_version.h"
 
 // ======================================================
 // IMU CONFIG
 // ======================================================
-static const int I2C_SDA_PIN = 22;
-static const int I2C_SCL_PIN = 21;
+static const int I2C_SDA_PIN = 25;
+static const int I2C_SCL_PIN = 26;
 static const unsigned long IMU_PERIOD_MS = 20;
+
+// ======================================================
+// BATTERY MONITOR CONFIG
+// R5 = 39k from battery to GPIO34, R6 = 10k to GND.
+// ======================================================
+static const int BATTERY_VOLTAGE_PIN = 34;
+static const float BATTERY_DIVIDER_GAIN = 4.9f;
+static const float BATTERY_CALIBRATION_FACTOR = 1.0f;
+static const float BATTERY_LOW_THRESHOLD_V = 11.0f;
+static const float BATTERY_RESET_THRESHOLD_V = 11.5f;
+static const uint8_t BATTERY_SAMPLE_COUNT = 16;
+static const uint8_t BATTERY_LOW_CONFIRMATION_COUNT = 3;
+static const unsigned long BATTERY_CHECK_PERIOD_MS = 100;
+static const unsigned long BATTERY_REPORT_PERIOD_MS = 1000;
 
 // ======================================================
 // MOTOR CONTROL CONFIG
 // ======================================================
-static const int MOTOR_SLEEP_PIN = 2;
+static const int MOTOR_SLEEP_PIN = 17;
 static const int MOTOR_OVERCURRENT_PIN = 23;
 static const int MOTOR_OVERCURRENT_ACTIVE_LEVEL = LOW;
 static const uint8_t MOTOR_COUNT = 4;
 static const float COUNTS_PER_REV = 3200.0f;
-static const float CONTROL_TS = 0.01f;
-static const unsigned long CONTROL_PERIOD_MS = 10;
-static const unsigned long RPM_REPORT_PERIOD_MS = 50;
+static const unsigned long CONTROL_PERIOD_US = 10000;
+static const float CONTROL_TS = CONTROL_PERIOD_US * 0.000001f;
+static const unsigned long JOINT_STATE_REPORT_PERIOD_MS = 50;
+static const unsigned long ODOM_REPORT_PERIOD_MS = 40;
+static const unsigned long CMD_VEL_TIMEOUT_MS = 500;
+
+static const float WHEEL_RADIUS_M = 0.075f;
+static const float CENTER_PROJECTION_SUM_M = 0.385f;
+static const float MAX_WHEEL_RPM = 200.0f;
 
 static const int PWM_FREQ_HZ = 10000;
 static const int PWM_RESOLUTION_BITS = 8;
@@ -33,7 +55,7 @@ static const float DEFAULT_REFERENCE_RPM = 0.0f;
 
 // ======================================================
 // PINOUT
-// Ajustar estos pines segun el cableado real.
+// Sincronizado con martha_circuits.kicad_sch.
 // ======================================================
 struct EncoderPins
 {
@@ -50,23 +72,34 @@ struct MotorPins
 };
 
 EncoderPins encoderPins[MOTOR_COUNT] = {
-    {14, 27},
-    {39, 36},
-    {13, 12},
-    {18, 19},
+    {12, 13},
+    {36, 39},
+    {4, 16},
+    {21, 22},
 };
 
 MotorPins motorPins[MOTOR_COUNT] = {
-    {26, 25, 0, 1},
-    {33, 32, 2, 3},
-    {4, 16, 4, 5},
-    {17, 5, 6, 7},
+    {27, 14, 0, 1},
+    {32, 33, 2, 3},
+    {15, 2, 4, 5},
+    {18, 19, 6, 7},
 };
+
+// Ajustan la polaridad fisica al orden logico FL, FR, RL, RR.
+// Cambiar solamente el elemento de la rueda que gire o cuente al reves.
+static const int8_t MOTOR_OUTPUT_SIGN[MOTOR_COUNT] = {1, 1, 1, 1};
+static const int8_t ENCODER_COUNT_SIGN[MOTOR_COUNT] = {1, 1, 1, 1};
 
 // ======================================================
 // STATE
 // ======================================================
 ImuMpu6050 imu;
+MecanumKinematics mecanumKinematics(WHEEL_RADIUS_M,
+                                    CENTER_PROJECTION_SUM_M,
+                                    MAX_WHEEL_RPM);
+MecanumOdometry mecanumOdometry(WHEEL_RADIUS_M,
+                                CENTER_PROJECTION_SUM_M,
+                                COUNTS_PER_REV);
 EncoderPCNT encoders[MOTOR_COUNT];
 PIController controllers[MOTOR_COUNT];
 
@@ -75,10 +108,18 @@ float rpmValues[MOTOR_COUNT];
 float pwmValues[MOTOR_COUNT];
 int8_t motorDirections[MOTOR_COUNT];
 bool motorOvercurrentLatched = false;
+bool batteryLowLatched = false;
+bool cmdVelActive = false;
+float batteryVoltage = 0.0f;
+uint8_t batteryLowConfirmationCount = 0;
 
 unsigned long lastImuReadMs = 0;
-unsigned long lastControlMs = 0;
-unsigned long lastRpmReportMs = 0;
+unsigned long lastBatteryCheckMs = 0;
+unsigned long lastBatteryReportMs = 0;
+unsigned long lastControlUs = 0;
+unsigned long lastJointStateReportMs = 0;
+unsigned long lastOdometryReportMs = 0;
+unsigned long lastCmdVelMs = 0;
 
 char serialBuffer[64];
 size_t serialBufferLength = 0;
@@ -94,19 +135,24 @@ void setup()
   {
   }
 
+  initBatteryMonitor();
   initImu();
   initMotors();
   initEncoders();
   initControllers();
   startMotorControl();
 
-  Serial.println("MOTOR_READY");
+  Serial.println((motorOvercurrentLatched || batteryLowLatched)
+                     ? "MOTOR_PROTECTION_ACTIVE"
+                     : "MOTOR_READY");
 }
 
 void loop()
 {
   readSerialReference();
+  updateBatteryMonitor();
   checkMotorProtection();
+  checkCmdVelTimeout();
   updateMotorControl();
   publishImu();
 }
@@ -238,8 +284,100 @@ void printI2cScan()
 }
 
 // ======================================================
-// SERIAL REFERENCE
-// Enviar una linea con un numero RPM, por ejemplo: 120
+// BATTERY MONITOR
+// ======================================================
+void initBatteryMonitor()
+{
+  pinMode(MOTOR_SLEEP_PIN, OUTPUT);
+  digitalWrite(MOTOR_SLEEP_PIN, LOW);
+  pinMode(BATTERY_VOLTAGE_PIN, INPUT);
+  analogReadResolution(12);
+  analogSetPinAttenuation(BATTERY_VOLTAGE_PIN, ADC_11db);
+
+  delay(10);
+  batteryVoltage = readBatteryVoltage();
+  lastBatteryCheckMs = millis();
+  lastBatteryReportMs = lastBatteryCheckMs;
+  publishBatteryVoltage();
+
+  if (batteryVoltage < BATTERY_LOW_THRESHOLD_V)
+  {
+    batteryLowLatched = true;
+    publishBatteryLowEvent();
+  }
+}
+
+float readBatteryVoltage()
+{
+  analogReadMilliVolts(BATTERY_VOLTAGE_PIN);
+  delayMicroseconds(250);
+
+  uint32_t millivoltSum = 0;
+  for (uint8_t i = 0; i < BATTERY_SAMPLE_COUNT; ++i)
+  {
+    millivoltSum += analogReadMilliVolts(BATTERY_VOLTAGE_PIN);
+    delayMicroseconds(250);
+  }
+
+  const float adcVoltage =
+      ((float)millivoltSum / BATTERY_SAMPLE_COUNT) * 0.001f;
+  return adcVoltage * BATTERY_DIVIDER_GAIN * BATTERY_CALIBRATION_FACTOR;
+}
+
+void updateBatteryMonitor()
+{
+  const unsigned long now = millis();
+  if (now - lastBatteryCheckMs < BATTERY_CHECK_PERIOD_MS)
+  {
+    return;
+  }
+
+  lastBatteryCheckMs = now;
+  batteryVoltage = readBatteryVoltage();
+
+  if (now - lastBatteryReportMs >= BATTERY_REPORT_PERIOD_MS)
+  {
+    lastBatteryReportMs = now;
+    publishBatteryVoltage();
+  }
+
+  if (batteryLowLatched)
+  {
+    return;
+  }
+
+  if (batteryVoltage >= BATTERY_LOW_THRESHOLD_V)
+  {
+    batteryLowConfirmationCount = 0;
+    return;
+  }
+
+  if (batteryLowConfirmationCount < BATTERY_LOW_CONFIRMATION_COUNT)
+  {
+    batteryLowConfirmationCount++;
+  }
+
+  if (batteryLowConfirmationCount >= BATTERY_LOW_CONFIRMATION_COUNT)
+  {
+    latchBatteryLow();
+  }
+}
+
+void publishBatteryVoltage()
+{
+  Serial.print("battery,");
+  Serial.println(batteryVoltage, 2);
+}
+
+void publishBatteryLowEvent()
+{
+  Serial.print("battery_too_low,");
+  Serial.println(batteryVoltage, 2);
+}
+
+// ======================================================
+// SERIAL COMMANDS
+// cmd_vel,vx_mps,vy_mps,wz_rad_s
 // ======================================================
 void readSerialReference()
 {
@@ -278,18 +416,72 @@ void processSerialCommand(const char* command)
     return;
   }
 
-  setAllReferences(atof(command));
-}
-
-void setAllReferences(float referenceRpm)
-{
-  for (uint8_t i = 0; i < MOTOR_COUNT; ++i)
+  if (strcmp(command, "odom_reset") == 0 || strcmp(command, "ODOM_RESET") == 0)
   {
-    referencesRpm[i] = referenceRpm;
+    resetOdometry();
+    return;
   }
 
-  Serial.print("ref_rpm,");
-  Serial.println(referenceRpm, 3);
+  float velocityXMps = 0.0f;
+  float velocityYMps = 0.0f;
+  float angularVelocityRads = 0.0f;
+  if (sscanf(command,
+             "cmd_vel,%f,%f,%f",
+             &velocityXMps,
+             &velocityYMps,
+             &angularVelocityRads) == 3)
+  {
+    setCmdVel(velocityXMps, velocityYMps, angularVelocityRads);
+    return;
+  }
+
+  Serial.println("cmd_error: expected cmd_vel,vx,vy,wz, reset or odom_reset");
+}
+
+void setCmdVel(float velocityXMps, float velocityYMps, float angularVelocityRads)
+{
+  if (motorOvercurrentLatched || batteryLowLatched)
+  {
+    Serial.println("cmd_vel_blocked: motor protection active");
+    return;
+  }
+
+  mecanumKinematics.calculateWheelRpm(velocityXMps,
+                                      velocityYMps,
+                                      angularVelocityRads,
+                                      referencesRpm);
+  lastCmdVelMs = millis();
+  cmdVelActive = true;
+
+  publishWheelReferences();
+}
+
+void checkCmdVelTimeout()
+{
+  if (!cmdVelActive || millis() - lastCmdVelMs <= CMD_VEL_TIMEOUT_MS)
+  {
+    return;
+  }
+
+  cmdVelActive = false;
+  for (uint8_t i = 0; i < MOTOR_COUNT; ++i)
+  {
+    referencesRpm[i] = 0.0f;
+    pi_reset(&controllers[i]);
+  }
+  stopAllMotors();
+  Serial.println("cmd_vel_timeout");
+}
+
+void publishWheelReferences()
+{
+  Serial.print("wheel_ref_rpm");
+  for (uint8_t i = 0; i < MOTOR_COUNT; ++i)
+  {
+    Serial.print(",");
+    Serial.print(referencesRpm[i], 2);
+  }
+  Serial.println();
 }
 
 // ======================================================
@@ -306,6 +498,11 @@ void initMotors()
     attachMotorPwm(motorPins[i].pwm1, motorPins[i].channel1);
     attachMotorPwm(motorPins[i].pwm2, motorPins[i].channel2);
     writeMotorPin(i, 0, 0);
+  }
+
+  if (batteryLowLatched)
+  {
+    return;
   }
 
   if (isMotorOvercurrentActive())
@@ -357,8 +554,9 @@ void startMotorControl()
     pi_reset(&controllers[i]);
   }
 
-  lastControlMs = millis();
-  lastRpmReportMs = millis();
+  lastControlUs = micros();
+  lastJointStateReportMs = millis();
+  lastOdometryReportMs = millis();
 }
 
 // ======================================================
@@ -480,13 +678,40 @@ void checkMotorProtection()
 void latchMotorOvercurrent()
 {
   motorOvercurrentLatched = true;
+  cmdVelActive = false;
   stopAllMotors();
   digitalWrite(MOTOR_SLEEP_PIN, LOW);
   Serial.println("motor_overcurrent");
 }
 
+void latchBatteryLow()
+{
+  batteryLowLatched = true;
+  batteryLowConfirmationCount = 0;
+  cmdVelActive = false;
+
+  for (uint8_t i = 0; i < MOTOR_COUNT; ++i)
+  {
+    referencesRpm[i] = 0.0f;
+  }
+
+  stopAllMotors();
+  digitalWrite(MOTOR_SLEEP_PIN, LOW);
+  publishBatteryLowEvent();
+}
+
 void resetMotorProtection()
 {
+  batteryVoltage = readBatteryVoltage();
+  publishBatteryVoltage();
+
+  if (batteryVoltage < BATTERY_RESET_THRESHOLD_V)
+  {
+    Serial.print("battery_reset_blocked,");
+    Serial.println(batteryVoltage, 2);
+    return;
+  }
+
   if (isMotorOvercurrentActive())
   {
     Serial.println("motor_overcurrent_reset_blocked");
@@ -494,9 +719,11 @@ void resetMotorProtection()
   }
 
   motorOvercurrentLatched = false;
+  batteryLowLatched = false;
+  batteryLowConfirmationCount = 0;
   digitalWrite(MOTOR_SLEEP_PIN, HIGH);
   startMotorControl();
-  Serial.println("motor_overcurrent_reset");
+  Serial.println("motor_protection_reset");
 }
 
 // ======================================================
@@ -504,43 +731,95 @@ void resetMotorProtection()
 // ======================================================
 void updateMotorControl()
 {
-  if (motorOvercurrentLatched)
+  if (motorOvercurrentLatched || batteryLowLatched)
   {
     return;
   }
 
-  const unsigned long now = millis();
-  if (now - lastControlMs < CONTROL_PERIOD_MS)
+  const unsigned long nowUs = micros();
+  const unsigned long elapsedUs = nowUs - lastControlUs;
+  if (elapsedUs < CONTROL_PERIOD_US)
   {
     return;
   }
 
-  lastControlMs = now;
+  lastControlUs = nowUs;
+  const float dtSeconds = elapsedUs * 0.000001f;
+  int wheelCounts[MOTOR_COUNT];
 
   for (uint8_t i = 0; i < MOTOR_COUNT; ++i)
   {
-    const int count = encoder_get_count(&encoders[i]);
+    const int rawCount = encoder_get_count(&encoders[i]);
     encoder_clear(&encoders[i]);
+    wheelCounts[i] = rawCount * ENCODER_COUNT_SIGN[i];
 
-    rpmValues[i] = ((float)count / COUNTS_PER_REV) * (60.0f / CONTROL_TS);
+    rpmValues[i] = ((float)wheelCounts[i] / COUNTS_PER_REV) *
+        (60.0f / dtSeconds);
+    controllers[i].ts = dtSeconds;
     pwmValues[i] = pi_update(&controllers[i], referencesRpm[i], rpmValues[i]);
-    setMotorPWM(i, pwmValues[i]);
+    setMotorPWM(i, pwmValues[i] * MOTOR_OUTPUT_SIGN[i]);
   }
 
-  if (now - lastRpmReportMs >= RPM_REPORT_PERIOD_MS)
+  mecanumOdometry.update(wheelCounts, dtSeconds);
+
+  const unsigned long nowMs = millis();
+  if (nowMs - lastJointStateReportMs >= JOINT_STATE_REPORT_PERIOD_MS)
   {
-    lastRpmReportMs = now;
-    publishRpm();
+    lastJointStateReportMs = nowMs;
+    publishJointState();
+  }
+
+  if (nowMs - lastOdometryReportMs >= ODOM_REPORT_PERIOD_MS)
+  {
+    lastOdometryReportMs = nowMs;
+    publishOdometry();
   }
 }
 
-void publishRpm()
+void publishJointState()
 {
-  Serial.print("rpm");
+  const MecanumOdometryData& odometry = mecanumOdometry.data();
+
+  Serial.print("joint");
   for (uint8_t i = 0; i < MOTOR_COUNT; ++i)
   {
     Serial.print(",");
-    Serial.print(rpmValues[i], 2);
+    Serial.print(odometry.wheelPositionRad[i], 5);
+  }
+
+  for (uint8_t i = 0; i < MOTOR_COUNT; ++i)
+  {
+    Serial.print(",");
+    Serial.print(odometry.wheelVelocityRads[i], 5);
   }
   Serial.println();
+}
+
+void publishOdometry()
+{
+  const MecanumOdometryData& odometry = mecanumOdometry.data();
+
+  Serial.print("odom,");
+  Serial.print(odometry.xM, 6);
+  Serial.print(",");
+  Serial.print(odometry.yM, 6);
+  Serial.print(",");
+  Serial.print(odometry.yawRad, 6);
+  Serial.print(",");
+  Serial.print(odometry.velocityXMps, 6);
+  Serial.print(",");
+  Serial.print(odometry.velocityYMps, 6);
+  Serial.print(",");
+  Serial.println(odometry.angularVelocityRads, 6);
+}
+
+void resetOdometry()
+{
+  mecanumOdometry.resetPose();
+  for (uint8_t i = 0; i < MOTOR_COUNT; ++i)
+  {
+    encoder_clear(&encoders[i]);
+  }
+  lastControlUs = micros();
+  Serial.println("odom_reset");
 }

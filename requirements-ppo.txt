@@ -1,0 +1,4 @@
+# Install inside the ROS 2 Humble environment before training or inference.
+gymnasium>=0.29,<2
+numpy>=1.23
+torch>=2.0

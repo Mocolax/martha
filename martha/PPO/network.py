@@ -1,9 +1,13 @@
+"""Actor-critic neural network used by Martha's continuous PPO policy."""
+
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
 
 
 class ActorCritic(nn.Module):
+    """Shared feature extractor with Gaussian actor and scalar critic heads."""
+
     def __init__(self, state_dim, action_dim, hidden_dim=256):
         super().__init__()
         hidden_half = hidden_dim // 2

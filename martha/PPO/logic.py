@@ -1,9 +1,13 @@
+"""PPO-Clip optimization and generalized advantage estimation."""
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
 
 class PPOLogic:
+    """Train an actor-critic network with minibatched PPO-Clip updates."""
+
     def __init__(
         self,
         network,
@@ -17,16 +21,7 @@ class PPOLogic:
         ppo_epochs=8,
         minibatch_size=256,
     ):
-        """
-        Logica central de PPO para acciones continuas.
-
-        Args:
-            network: instancia de ActorCritic.
-            lr: tasa de aprendizaje.
-            eps: rango de clipping de PPO.
-            gamma: factor de descuento.
-            lam: lambda de GAE.
-        """
+        """Initialize PPO-Clip hyperparameters and the Adam optimizer."""
         self.network = network
         self.optimizer = optim.Adam(self.network.parameters(), lr=lr)
         self.eps = eps
@@ -38,33 +33,63 @@ class PPOLogic:
         self.ppo_epochs = ppo_epochs
         self.minibatch_size = minibatch_size
 
-    def compute_gae(self, rewards, values, dones, last_value=None):
+    def compute_gae(
+        self,
+        rewards,
+        values,
+        dones=None,
+        last_value=None,
+        *,
+        next_values=None,
+        terminateds=None,
+        episode_ends=None,
+    ):
         """
         Calcula ventajas con GAE y retornos para entrenar el critico.
 
-        Si el rollout termina por truncamiento y no por done=True, puedes pasar
-        last_value=V(siguiente_estado) para bootstrap.
+        ``terminateds`` controls value bootstrap, while ``episode_ends`` cuts
+        the recursive GAE trace.  This distinction prevents time limits from
+        being treated as absorbing states without leaking advantages into the
+        next reset episode.
         """
         rewards = rewards.view(-1, 1)
         values = values.view(-1, 1)
-        dones = dones.view(-1, 1)
+        if episode_ends is None:
+            if dones is None:
+                raise ValueError("episode_ends or dones is required")
+            episode_ends = dones
+        if terminateds is None:
+            terminateds = dones if dones is not None else episode_ends
+        terminateds = terminateds.view(-1, 1)
+        episode_ends = episode_ends.view(-1, 1)
+
+        if next_values is None:
+            if last_value is None:
+                last_value = torch.zeros_like(values[0])
+            else:
+                last_value = torch.as_tensor(
+                    last_value,
+                    dtype=values.dtype,
+                    device=values.device,
+                ).view(1)
+            next_values = torch.cat((values[1:], last_value.view(1, 1)), dim=0)
+        else:
+            next_values = next_values.view(-1, 1)
 
         advantages = torch.zeros_like(rewards)
         last_gae_lam = torch.zeros_like(values[0])
-        if last_value is None:
-            last_value = torch.zeros_like(values[0])
-        else:
-            last_value = torch.as_tensor(
-                last_value,
-                dtype=values.dtype,
-                device=values.device,
-            ).view(1)
-
         for t in reversed(range(len(rewards))):
-            next_value = last_value if t == len(rewards) - 1 else values[t + 1]
-            next_non_terminal = 1.0 - dones[t]
-            delta = rewards[t] + self.gamma * next_value * next_non_terminal - values[t]
-            last_gae_lam = delta + self.gamma * self.lam * next_non_terminal * last_gae_lam
+            bootstrap_mask = 1.0 - terminateds[t]
+            trace_mask = 1.0 - episode_ends[t]
+            delta = (
+                rewards[t]
+                + self.gamma * next_values[t] * bootstrap_mask
+                - values[t]
+            )
+            last_gae_lam = (
+                delta
+                + self.gamma * self.lam * trace_mask * last_gae_lam
+            )
             advantages[t] = last_gae_lam
 
         returns = advantages + values
@@ -172,9 +197,7 @@ class PPOLogic:
         return stats
 
     def train_buffer(self, buffer, last_value=None):
-        """
-        Entrena con el rollout completo y limpia el buffer on-policy.
-        """
+        """Train on the complete rollout and clear the on-policy buffer."""
         if len(buffer) == 0:
             return {
                 "loss": 0.0,
@@ -184,12 +207,22 @@ class PPOLogic:
                 "updates": 0,
             }
 
-        states, actions, old_logprobs, rewards, dones, values = buffer.get_all()
+        (
+            states,
+            actions,
+            old_logprobs,
+            rewards,
+            values,
+            next_values,
+            terminateds,
+            episode_ends,
+        ) = buffer.get_training_batch()
         advantages, returns = self.compute_gae(
             rewards=rewards,
             values=values,
-            dones=dones,
-            last_value=last_value,
+            next_values=next_values,
+            terminateds=terminateds,
+            episode_ends=episode_ends,
         )
         stats = self.update(states, actions, old_logprobs, advantages, returns)
         buffer.clear()
