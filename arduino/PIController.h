@@ -17,7 +17,5 @@ typedef struct {
 void pi_init(PIController* controller, float kp, float ki, float ts, float outputMin, float outputMax);
 float pi_update(PIController* controller, float reference, float measurement);
 void pi_reset(PIController* controller);
-void pi_set_gains(PIController* controller, float kp, float ki);
-void pi_set_limits(PIController* controller, float outputMin, float outputMax);
 
 #endif

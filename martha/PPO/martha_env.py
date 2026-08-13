@@ -24,34 +24,15 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
-try:  # Package import and direct-script import are both supported.
-    from .actions import (
-        ActionLimits,
-        limit_action_rate,
-        sanitize_action,
-        scale_action,
-    )
-    from .observations import (
-        build_observation,
-        goal_features,
-        reduce_laser_scan,
-    )
-    from .reward import RewardConfig, calculate_reward
-    from .world_map import EpisodeSample, WorldMap, discover_worlds
-except ImportError:  # pragma: no cover - used only when launched as a script.
-    from actions import (  # type: ignore
-        ActionLimits,
-        limit_action_rate,
-        sanitize_action,
-        scale_action,
-    )
-    from observations import (  # type: ignore
-        build_observation,
-        goal_features,
-        reduce_laser_scan,
-    )
-    from reward import RewardConfig, calculate_reward  # type: ignore
-    from world_map import EpisodeSample, WorldMap, discover_worlds  # type: ignore
+from .actions import (
+    ActionLimits,
+    limit_action_rate,
+    sanitize_action,
+    scale_action,
+)
+from .observations import build_observation, goal_features, reduce_laser_scan
+from .reward import RewardConfig, calculate_reward
+from .world_map import EpisodeSample, WorldMap, discover_worlds
 
 
 try:
@@ -117,6 +98,11 @@ LASER_SECTORS = 36
 OBSERVATION_SIZE = LASER_SECTORS + 3 + 3 + 3
 ACTION_SIZE = 3
 POLICY_CONTRACT_VERSION = 1
+PPO_SCENARIO_ENTITY_PREFIX = "martha_ppo_s"
+PPO_GOAL_ENTITY_PREFIX = "martha_ppo_goal_"
+PPO_GOAL_ENTITY_NAME = "martha_ppo_goal_current"
+MAX_RANDOM_RESET_ATTEMPTS = 20
+GAZEBO_CONTROL_SERVICE_ATTEMPTS = 3
 
 
 def scan_hits_footprint(
@@ -234,6 +220,7 @@ def _validate_reward_config(config: RewardConfig) -> None:
         raise ValueError("reward configuration must contain only finite values")
     nonnegative = (
         config.progress_scale,
+        config.progress_distance_floor,
         config.step_penalty,
         config.action_penalty,
         config.action_change_penalty,
@@ -242,8 +229,11 @@ def _validate_reward_config(config: RewardConfig) -> None:
         config.collision_penalty,
         config.out_of_bounds_penalty,
     )
-    if min(nonnegative) < 0.0:
-        raise ValueError("reward scales and penalties cannot be negative")
+    if min(nonnegative) < 0.0 or config.progress_distance_floor <= 0.0:
+        raise ValueError(
+            "reward scales and penalties cannot be negative and "
+            "progress_distance_floor must be positive"
+        )
     if not 0.0 <= config.collision_distance < config.clearance_distance:
         raise ValueError(
             "reward collision_distance must be nonnegative and smaller than "
@@ -413,6 +403,8 @@ class RosObservationNode(_NodeBase):
         self._odometry_stamp_ns = -1
         self._odom_pose: tuple[float, float, float] | None = None
         self._ground_truth_pose: tuple[float, float, float] | None = None
+        self._gazebo_model_names: set[str] = set()
+        self._model_states_sequence = 0
         self._velocity = (0.0, 0.0, 0.0)
         self._goal: tuple[float, float, float, str] | None = None
         self._goal_sequence = 0
@@ -583,6 +575,11 @@ class RosObservationNode(_NodeBase):
         return True
 
     def _model_states_callback(self, message: Any) -> None:
+        model_names = {str(name) for name in message.name}
+        with self._condition:
+            self._gazebo_model_names = model_names
+            self._model_states_sequence += 1
+            self._condition.notify_all()
         try:
             index = message.name.index(self.robot_name)
             pose = message.pose[index]
@@ -607,6 +604,48 @@ class RosObservationNode(_NodeBase):
             )
             self._ground_truth_sequence += 1
             self._condition.notify_all()
+
+    def gazebo_model_names(self) -> set[str]:
+        """Return the latest complete Gazebo model-name inventory."""
+        with self._condition:
+            return set(self._gazebo_model_names)
+
+    def gazebo_model_inventory(self) -> tuple[int, set[str]]:
+        """Return the model-state sequence and its complete name inventory."""
+        with self._condition:
+            return self._model_states_sequence, set(self._gazebo_model_names)
+
+    def wait_for_gazebo_entities_absent(
+        self,
+        names: set[str],
+        after_sequence: int,
+        timeout: float,
+    ) -> set[str]:
+        """Wait for a fresh inventory and return any entities still present."""
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            while True:
+                remaining_names = names & self._gazebo_model_names
+                if (
+                    self._model_states_sequence > after_sequence
+                    and not remaining_names
+                ):
+                    return set()
+                remaining_time = deadline - time.monotonic()
+                if remaining_time <= 0.0:
+                    return set(remaining_names)
+                self._condition.wait(timeout=remaining_time)
+
+    def wait_for_gazebo_model_names(self, timeout: float) -> set[str]:
+        """Wait until Gazebo publishes a non-empty model inventory."""
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            while not self._gazebo_model_names:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return set()
+                self._condition.wait(timeout=remaining)
+            return set(self._gazebo_model_names)
 
     def _fault_callback(self, message: Any) -> None:
         active = bool(message.data)
@@ -927,7 +966,7 @@ class MarthaEnv(_GymEnvBase):
         goal_tolerance: float = 0.25,
         max_goal_distance: float = 12.0,
         min_goal_distance: float = 2.0,
-        footprint_safety_margin: float = 0.05,
+        footprint_safety_margin: float = 0.02,
         action_limits: ActionLimits = ActionLimits(),
         reward_config: RewardConfig = RewardConfig(),
         allow_hardware_training: bool = False,
@@ -1094,6 +1133,8 @@ class MarthaEnv(_GymEnvBase):
         }
         self._closed = False
         self._active_world_index: int | None = None
+        self._scenario_entity_names: set[str] = set()
+        self._goal_marker_name: str | None = None
         self._world_map: WorldMap | None = None
         self._distance_field: np.ndarray | None = None
         self._episode_sample: EpisodeSample | None = None
@@ -1104,7 +1145,24 @@ class MarthaEnv(_GymEnvBase):
         self._last_snapshot: SensorSnapshot | None = None
 
     def _call_empty(self, key: str) -> None:
-        self.ros.call_service(key, Empty.Request(), self.service_timeout)
+        attempts = (
+            GAZEBO_CONTROL_SERVICE_ATTEMPTS
+            if key in {"pause", "unpause"}
+            else 1
+        )
+        for attempt in range(1, attempts + 1):
+            try:
+                self.ros.call_service(
+                    key,
+                    Empty.Request(),
+                    self.service_timeout,
+                )
+                return
+            except TimeoutError:
+                if key == "pause":
+                    self.ros.publish_stop()
+                if attempt == attempts:
+                    raise
 
     def _delete_entity(self, name: str, *, ignore_failure: bool = False) -> None:
         request = DeleteEntity.Request()
@@ -1167,32 +1225,111 @@ class MarthaEnv(_GymEnvBase):
                 f"Could not spawn Gazebo entity {name}: {response.status_message}"
             )
 
+    def _delete_entities_and_wait(self, names: set[str]) -> None:
+        """Delete entities and confirm their absence before names are reused."""
+        if not names:
+            return
+        inventory_sequence, _ = self.ros.gazebo_model_inventory()
+        for name in sorted(names):
+            self._delete_entity(name, ignore_failure=True)
+
+        # Gazebo publishes model-state changes while physics is active. This
+        # barrier also gives the GUI time to consume each deletion before a
+        # replacement with the same stable name is created.
+        self.ros.publish_stop()
+        self._call_empty("unpause")
+        try:
+            remaining = self.ros.wait_for_gazebo_entities_absent(
+                names,
+                inventory_sequence,
+                self.control_timeout,
+            )
+        finally:
+            self._call_empty("pause")
+        if remaining:
+            formatted_names = ", ".join(sorted(remaining))
+            raise RuntimeError(
+                "Gazebo did not remove the previous PPO entities: "
+                f"{formatted_names}"
+            )
+
     def _switch_world(self, index: int) -> None:
         # Gazebo is shared external state: another process may have changed the
         # scenario even when this local environment cached the same index.
-        all_names = {
+        source_names = {
             name
             for world_map in self.predefined_maps
             for name in world_map.scenario_model_names
         }
-        all_names.add("goal_point")
-        for name in sorted(all_names):
-            self._delete_entity(name, ignore_failure=True)
+        names_to_delete = source_names | self._scenario_entity_names
+        names_to_delete.update(
+            name
+            for name in self.ros.gazebo_model_names()
+            if name.startswith(PPO_SCENARIO_ENTITY_PREFIX)
+            or name.startswith(PPO_GOAL_ENTITY_PREFIX)
+        )
+        names_to_delete.add("goal_point")
+        if self._goal_marker_name is not None:
+            names_to_delete.add(self._goal_marker_name)
+        self._delete_entities_and_wait(names_to_delete)
 
+        self._scenario_entity_names = set()
+        self._goal_marker_name = None
         world_map = self.predefined_maps[index]
         for name in world_map.scenario_model_names:
             xml, pose = self._spawn_payload(world_map.model_xml[name])
-            self._spawn_entity(name, xml, pose)
+            runtime_name = f"{PPO_SCENARIO_ENTITY_PREFIX}_{name}"
+            self._spawn_entity(runtime_name, xml, pose)
+            self._scenario_entity_names.add(runtime_name)
         self._active_world_index = index
 
+    def _cleanup_managed_gazebo_entities(self) -> None:
+        """Best-effort removal of every scenario entity owned by PPO."""
+        names = set(self._scenario_entity_names)
+        names.update(
+            name
+            for name in self.ros.gazebo_model_names()
+            if name.startswith(PPO_SCENARIO_ENTITY_PREFIX)
+            or name.startswith(PPO_GOAL_ENTITY_PREFIX)
+        )
+        if self._goal_marker_name is not None:
+            names.add(self._goal_marker_name)
+        for name in sorted(names):
+            self._delete_entity(name, ignore_failure=True)
+        self._scenario_entity_names.clear()
+        self._goal_marker_name = None
+
+    def _reset_world_scenario(self, index: int) -> None:
+        """Reset dynamics before restoring the selected scenario geometry."""
+        # Gazebo remembers the initial poses of models by name.  Calling
+        # reset_world after replacing (for example) wall_left can therefore
+        # move that newly spawned wall back to the pose from the launch world.
+        # Always reset first and replace the scenario models afterwards so the
+        # live geometry stays aligned with the WorldMap used by PPO.
+        self._call_empty("reset_world")
+        self._switch_world(index)
+
+    def _ensure_gazebo_model_inventory(self) -> None:
+        """Obtain model names even when a previous process left Gazebo paused."""
+        if self.ros.gazebo_model_names():
+            return
+        self.ros.publish_stop()
+        self._call_empty("unpause")
+        try:
+            names = self.ros.wait_for_gazebo_model_names(self.control_timeout)
+        finally:
+            self._call_empty("pause")
+        if not names:
+            raise TimeoutError("Gazebo did not publish its model inventory")
+
     def _spawn_goal_marker(self, x: float, y: float) -> None:
-        self._delete_entity("goal_point", ignore_failure=True)
         pose = Pose()
         pose.position.x = float(x)
         pose.position.y = float(y)
         pose.position.z = 0.20
         pose.orientation.w = 1.0
-        self._spawn_entity("goal_point", GOAL_MODEL_SDF, pose)
+        self._spawn_entity(PPO_GOAL_ENTITY_NAME, GOAL_MODEL_SDF, pose)
+        self._goal_marker_name = PPO_GOAL_ENTITY_NAME
 
     def _set_robot_state(self, x: float, y: float, yaw: float) -> None:
         request = SetEntityState.Request()
@@ -1370,16 +1507,18 @@ class MarthaEnv(_GymEnvBase):
         explicit_episode = "start" in options or "goal" in options
         self.ros.publish_stop()
         self._call_empty("pause")
-        self._switch_world(index)
+        self._ensure_gazebo_model_inventory()
 
-        # Teleporting only the model root does not reset wheel and roller
-        # dynamics.  Without this reset, those states leak across episodes and
-        # can throw the robot into an obstacle as soon as physics resumes.
+        # Reset dynamics before every placement attempt.  The selected
+        # scenario must be restored after reset_world because Gazebo otherwise
+        # reuses the launch world's initial poses for models with the same name.
         last_problem = "unknown reset failure"
-        maximum_attempts = 1 if explicit_episode else 5
+        maximum_attempts = (
+            1 if explicit_episode else MAX_RANDOM_RESET_ATTEMPTS
+        )
         for _ in range(maximum_attempts):
             sample = self._episode_for_reset(world_map, options)
-            self._call_empty("reset_world")
+            self._reset_world_scenario(index)
             self.ros.publish_stop()
             self._spawn_goal_marker(sample.goal_x, sample.goal_y)
             self._set_robot_state(sample.start_x, sample.start_y, sample.start_yaw)
@@ -1426,13 +1565,11 @@ class MarthaEnv(_GymEnvBase):
             settled_x = settled_snapshot.ground_truth_x
             settled_y = settled_snapshot.ground_truth_y
             settled_yaw = settled_snapshot.ground_truth_yaw
-            unsafe_start = (
-                not world_map.is_free_pose(settled_x, settled_y)
-                or scan_hits_footprint(
-                    settled_snapshot.laser_sectors,
-                    self.ros.scan_range_max,
-                    safety_margin=self.footprint_safety_margin,
-                )
+            geometry_safe = world_map.is_free_pose(settled_x, settled_y)
+            lidar_safe = not scan_hits_footprint(
+                settled_snapshot.laser_sectors,
+                self.ros.scan_range_max,
+                safety_margin=self.footprint_safety_margin,
             )
             distance_field = world_map.distance_field(sample.goal_x, sample.goal_y)
             shortest_path = world_map.path_distance(
@@ -1440,8 +1577,18 @@ class MarthaEnv(_GymEnvBase):
                 settled_y,
                 distance_field,
             )
-            if unsafe_start or not math.isfinite(shortest_path):
-                last_problem = "settled pose is not collision-free and connected"
+            connected = math.isfinite(shortest_path)
+            if not geometry_safe or not lidar_safe or not connected:
+                failed_checks = []
+                if not geometry_safe:
+                    failed_checks.append("map geometry")
+                if not lidar_safe:
+                    failed_checks.append("LiDAR footprint")
+                if not connected:
+                    failed_checks.append("goal connectivity")
+                last_problem = (
+                    "settled pose failed " + ", ".join(failed_checks)
+                )
                 if explicit_episode:
                     break
                 continue
@@ -1812,6 +1959,11 @@ class MarthaEnv(_GymEnvBase):
         # Gazebo/RViz rendering is owned by their launch processes.
         return None
 
+    def stop(self) -> None:
+        """Publish an explicit zero command without closing the environment."""
+        if not self._closed:
+            self.ros.publish_stop()
+
     def close(self) -> None:
         """Publish zero velocity and release ROS resources idempotently."""
         if self._closed:
@@ -1819,6 +1971,14 @@ class MarthaEnv(_GymEnvBase):
         self._closed = True
         try:
             self.ros.publish_stop()
+            if self.backend == "gazebo":
+                try:
+                    self._call_empty("pause")
+                    self._cleanup_managed_gazebo_entities()
+                except Exception:
+                    # Shutdown must still release the ROS context if Gazebo has
+                    # already failed or disappeared.
+                    pass
         finally:
             self._runtime.close()
 

@@ -1,13 +1,57 @@
+# ros2 launch martha simulation.launch.py gui:=false sim_speed_factor:=4.0
+
+from pathlib import Path
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.actions import RegisterEventHandler
-from launch.event_handlers import OnProcessExit
+from launch.actions import OpaqueFunction, RegisterEventHandler
+from launch.event_handlers import OnProcessExit, OnShutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, FindExecutable
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
+
+from martha.simulation_speed import create_scaled_world
+
+
+def cleanup_scaled_world(_context, world_path):
+    """Remove the generated SDF when its launch shuts down."""
+    Path(world_path).unlink(missing_ok=True)
+    return []
+
+
+def launch_gazebo(context):
+    """Launch Gazebo with a temporary world at the requested speed factor."""
+    source_world = LaunchConfiguration('world').perform(context)
+    speed_factor = LaunchConfiguration('sim_speed_factor').perform(context)
+    scaled_world = create_scaled_world(source_world, speed_factor)
+    cleanup_handler = RegisterEventHandler(
+        OnShutdown(
+            on_shutdown=[
+                OpaqueFunction(
+                    function=cleanup_scaled_world,
+                    kwargs={'world_path': str(scaled_world)},
+                ),
+            ],
+        )
+    )
+    gazebo = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([
+                FindPackageShare('gazebo_ros'),
+                'launch',
+                'gazebo.launch.py',
+            ])
+        ),
+        launch_arguments={
+            'gui': LaunchConfiguration('gui'),
+            'pause': 'true',
+            'world': str(scaled_world),
+        }.items(),
+    )
+    return [cleanup_handler, gazebo]
 
 
 def generate_launch_description():
@@ -28,6 +72,11 @@ def generate_launch_description():
         default_value='true',
         description='Inicia la interfaz grafica de Gazebo',
     )
+    speed_argument = DeclareLaunchArgument(
+        'sim_speed_factor',
+        default_value='1.0',
+        description='Factor objetivo de tiempo simulado; rango (0, 20]',
+    )
 
     robot_description = ParameterValue(
         Command([
@@ -40,21 +89,6 @@ def generate_launch_description():
             ]),
         ]),
         value_type=str,
-    )
-
-    gazebo = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution([
-                FindPackageShare('gazebo_ros'),
-                'launch',
-                'gazebo.launch.py',
-            ])
-        ),
-        launch_arguments={
-            'gui': LaunchConfiguration('gui'),
-            'pause': 'true',
-            'world': LaunchConfiguration('world'),
-        }.items(),
     )
 
     robot_state_publisher = Node(
@@ -133,7 +167,8 @@ def generate_launch_description():
     return LaunchDescription([
         world_argument,
         gui_argument,
-        gazebo,
+        speed_argument,
+        OpaqueFunction(function=launch_gazebo),
         robot_state_publisher,
         robot_spawner,
         controller_spawners,

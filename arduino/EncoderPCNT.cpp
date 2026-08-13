@@ -54,13 +54,3 @@ void encoder_clear(EncoderPCNT* enc)
 {
   ESP_ERROR_CHECK(pcnt_counter_clear(enc->unit));
 }
-
-void encoder_start(EncoderPCNT* enc)
-{
-  ESP_ERROR_CHECK(pcnt_counter_resume(enc->unit));
-}
-
-void encoder_stop(EncoderPCNT* enc)
-{
-  ESP_ERROR_CHECK(pcnt_counter_pause(enc->unit));
-}

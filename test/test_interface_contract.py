@@ -181,17 +181,43 @@ def test_only_the_active_ekf_owns_dynamic_odom_tf():
     assert "odom_tf_broadcaster" not in _string_literals(hardware_tree)
 
 
-def test_legacy_simulation_launches_delegate_to_the_canonical_pipeline():
-    expected_targets = {
-        "launch/gazebo.launch.py": "simulation.launch.py",
-        "launch/gazebo_rviz.launch.py": "bringup.launch.py",
-        "launch/gz_rviz_map.launch.py": "bringup.launch.py",
+def test_only_current_launch_files_remain():
+    launch_files = {
+        path.name for path in _path("launch").glob("*.launch.py")
     }
-    for path, target in expected_targets.items():
-        literals = _string_literals(_parse_python(path))
-        assert target in literals
-        assert "odom_tf_broadcaster" not in literals
-        assert "ekf_node" not in literals
+    assert launch_files == {
+        "bringup.launch.py",
+        "hardware.launch.py",
+        "ppo_navigation.launch.py",
+        "simulation.launch.py",
+    }
+
+
+def test_generated_and_obsolete_sources_are_absent():
+    removed = (
+        "config/SLAM_toolbox.yaml",
+        "config/ekf.yaml",
+        "martha/imu_serial_viewer.py",
+        "martha/odom_tf_broadcaster.py",
+        "martha/PPO/deep-research-report.md",
+        "urdf/learning.urdf",
+        "worlds/mundo.world",
+        "pcb.zip",
+    )
+
+    assert all(not _path(path).exists() for path in removed)
+
+
+def test_kicad_libraries_are_portable_and_only_manufacturing_zip_remains():
+    table = _path("pcb/martha_circuits/fp-lib-table").read_text(
+        encoding="utf-8"
+    )
+
+    assert "/home/" not in table
+    assert "${KIPRJMOD}/../Pololu_Driver.pretty" in table
+    assert "${KIPRJMOD}/../My_Components.pretty/My_Components.pretty" in table
+    assert _path("pcb/martha_circuits/Gerbers.zip").is_file()
+    assert not _path("pcb/martha_circuits/Gerbers").exists()
 
 
 def test_hardware_bridge_exposes_the_common_command_and_sensor_topics():
@@ -212,6 +238,20 @@ def test_hardware_bridge_exposes_the_common_command_and_sensor_topics():
     assert bridge["max_vy"] == 0.35
     assert bridge["max_wz"] == 0.80
     assert bridge["serial_timeout"] > 0.0
+
+
+def test_rplidar_a2m8_uses_the_common_scan_contract():
+    lidar = _ros_parameters("config/rplidar_a2m8.yaml", "rplidar_node")
+
+    assert lidar["channel_type"] == "serial"
+    assert lidar["serial_port"] == "/dev/rplidar"
+    assert lidar["serial_baudrate"] == 115200
+    assert lidar["frame_id"] == "lidar"
+    assert lidar["topic_name"] == "/scan"
+    assert lidar["scan_mode"] == "Sensitivity"
+    assert lidar["scan_frequency"] == 10.0
+    assert lidar["angle_compensate"] is True
+    assert lidar["inverted"] is False
 
 
 def test_both_backends_accept_twist_commands_on_cmd_vel():
@@ -248,7 +288,9 @@ def test_simulation_launch_has_the_rl_sensor_and_odometry_pipeline():
     tree = _parse_python("launch/simulation.launch.py")
     literals = _string_literals(tree)
 
-    assert {"gui", "world"} <= _declared_launch_arguments(tree)
+    assert {"gui", "world", "sim_speed_factor"} <= (
+        _declared_launch_arguments(tree)
+    )
     assert {
         "joint_state_broadcaster",
         "mecanum_drive_controller",
@@ -266,9 +308,19 @@ def test_bringup_launch_selects_backends_and_optional_mapping_tools():
     literals = _string_literals(tree)
     defaults = _launch_argument_defaults(tree)
 
-    assert {"mode", "world", "gui", "port", "mapping", "rviz"} <= (
-        _declared_launch_arguments(tree)
-    )
+    assert {
+        "mode",
+        "world",
+        "gui",
+        "sim_speed_factor",
+        "port",
+        "lidar_port",
+        "lidar_frame",
+        "lidar_scan_mode",
+        "start_lidar",
+        "mapping",
+        "rviz",
+    } <= _declared_launch_arguments(tree)
     assert {
         "sim",
         "hardware",
@@ -279,8 +331,11 @@ def test_bringup_launch_selects_backends_and_optional_mapping_tools():
         "map.rviz",
     } <= literals
     assert defaults["mode"] == "sim"
+    assert defaults["sim_speed_factor"] == "1.0"
     assert defaults["mapping"] == "false"
     assert defaults["rviz"] == "true"
+    assert defaults["lidar_port"] == "/dev/rplidar"
+    assert defaults["start_lidar"] == "true"
 
 
 def test_ppo_navigation_launch_reuses_bringup_for_both_backends():
@@ -292,7 +347,12 @@ def test_ppo_navigation_launch_reuses_bringup_for_both_backends():
         "mode",
         "world",
         "gui",
+        "sim_speed_factor",
         "port",
+        "lidar_port",
+        "lidar_frame",
+        "lidar_scan_mode",
+        "start_lidar",
         "mapping",
         "rviz",
         "device",
@@ -352,12 +412,12 @@ def test_console_script_targets_exist_without_importing_them():
     required = {
         "cmd_vel_to_twist_stamped",
         "cmd_vel_serial_bridge",
-        "odom_tf_broadcaster",
         "ppo_train",
         "ppo_evaluate",
+        "ppo_plot",
         "ppo_policy",
     }
-    assert required <= scripts.keys()
+    assert required == scripts.keys()
 
     for name, target in scripts.items():
         module_name, separator, function_name = target.partition(":")

@@ -165,38 +165,6 @@ bool ImuMpu6050::calibrate(uint16_t samples)
   return true;
 }
 
-bool ImuMpu6050::calibrateGyro(uint16_t samples)
-{
-  if (samples == 0)
-  {
-    return false;
-  }
-
-  long gyro_x_sum = 0;
-  long gyro_y_sum = 0;
-  long gyro_z_sum = 0;
-
-  for (uint16_t i = 0; i < samples; ++i)
-  {
-    ImuRawData raw;
-    if (!readRaw(raw))
-    {
-      return false;
-    }
-
-    gyro_x_sum += raw.gyro_x;
-    gyro_y_sum += raw.gyro_y;
-    gyro_z_sum += raw.gyro_z;
-    delay(3);
-  }
-
-  gyro_x_bias_ = (float)gyro_x_sum / samples;
-  gyro_y_bias_ = (float)gyro_y_sum / samples;
-  gyro_z_bias_ = (float)gyro_z_sum / samples;
-
-  return true;
-}
-
 uint8_t ImuMpu6050::whoAmI() const
 {
   return who_am_i_;

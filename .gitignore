@@ -10,3 +10,14 @@ __pycache__/
 build/
 install/
 log/
+
+# Editor state is local to each development machine.
+.vscode/c_cpp_properties.json
+
+# KiCad autosaves, recovery data and generated manufacturing directories.
+pcb.zip
+pcb/**/.history/
+pcb/**/_restore_backup_*/
+pcb/**/*.bak
+pcb/**/*.backup_*
+pcb/**/Gerbers/

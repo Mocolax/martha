@@ -103,7 +103,7 @@ class WorldMap:
         obstacles: Iterable[BoxObstacle],
         model_xml: dict[str, str],
         resolution: float = 0.10,
-        robot_clearance: float = 0.45,
+        robot_clearance: float = 0.35,
     ):
         self.path = Path(path)
         self.world_name = world_name
@@ -167,7 +167,7 @@ class WorldMap:
         cls,
         path: str | Path,
         resolution: float = 0.10,
-        robot_clearance: float = 0.45,
+        robot_clearance: float = 0.35,
     ) -> "WorldMap":
         path = Path(path).resolve()
         root = ET.parse(path).getroot()

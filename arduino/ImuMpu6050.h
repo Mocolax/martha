@@ -41,7 +41,6 @@ public:
   bool readRaw(ImuRawData &data);
   bool read(ImuData &data);
   bool calibrate(uint16_t samples = 600);
-  bool calibrateGyro(uint16_t samples = 500);
   uint8_t whoAmI() const;
 
 private:

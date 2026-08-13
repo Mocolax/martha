@@ -13,7 +13,5 @@ typedef struct {
 void encoder_init(EncoderPCNT* enc, int pinA, int pinB);
 int encoder_get_count(EncoderPCNT* enc);
 void encoder_clear(EncoderPCNT* enc);
-void encoder_start(EncoderPCNT* enc);
-void encoder_stop(EncoderPCNT* enc);
 
 #endif

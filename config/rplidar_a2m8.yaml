@@ -1,0 +1,13 @@
+rplidar_node:
+  ros__parameters:
+    channel_type: serial
+    serial_port: /dev/rplidar
+    serial_baudrate: 115200
+    frame_id: lidar
+    inverted: false
+    angle_compensate: true
+    flip_x_axis: false
+    auto_standby: false
+    topic_name: /scan
+    scan_mode: Sensitivity
+    scan_frequency: 10.0

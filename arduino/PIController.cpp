@@ -37,25 +37,3 @@ void pi_reset(PIController* controller)
   controller->error = 0.0f;
   controller->output = 0.0f;
 }
-
-void pi_set_gains(PIController* controller, float kp, float ki)
-{
-  controller->kp = kp;
-  controller->ki = ki;
-}
-
-void pi_set_limits(PIController* controller, float outputMin, float outputMax)
-{
-  controller->outputMin = outputMin;
-  controller->outputMax = outputMax;
-
-  if (controller->output > controller->outputMax)
-  {
-    controller->output = controller->outputMax;
-  }
-
-  if (controller->output < controller->outputMin)
-  {
-    controller->output = controller->outputMin;
-  }
-}

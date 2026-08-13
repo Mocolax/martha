@@ -10,6 +10,7 @@ hardware motor fault always produce an immediate zero command.
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 import math
 import time
@@ -17,49 +18,49 @@ from typing import Any
 
 import numpy as np
 
-try:
-    from .actions import (
-        ActionLimits,
-        limit_action_rate,
-        sanitize_action,
-        scale_action,
-    )
-    from .martha_env import (
-        ACTION_SIZE,
-        LASER_SECTORS,
-        OBSERVATION_SIZE,
-        POLICY_CONTRACT_VERSION,
-        RosObservationNode,
-        _require_ros,
-        scan_hits_footprint,
-    )
-    from .observations import build_observation, goal_features
-except ImportError:  # pragma: no cover - direct-script fallback.
-    from actions import (  # type: ignore
-        ActionLimits,
-        limit_action_rate,
-        sanitize_action,
-        scale_action,
-    )
-    from martha_env import (  # type: ignore
-        ACTION_SIZE,
-        LASER_SECTORS,
-        OBSERVATION_SIZE,
-        POLICY_CONTRACT_VERSION,
-        RosObservationNode,
-        _require_ros,
-        scan_hits_footprint,
-    )
-    from observations import build_observation, goal_features  # type: ignore
+from .actions import (
+    ActionLimits,
+    limit_action_rate,
+    sanitize_action,
+    scale_action,
+)
+from .checkpoint import choose_device, load_policy
+from .martha_env import (
+    ACTION_SIZE,
+    LASER_SECTORS,
+    OBSERVATION_SIZE,
+    POLICY_CONTRACT_VERSION,
+    RosObservationNode,
+    _require_ros,
+    scan_hits_footprint,
+)
+from .observations import build_observation, goal_features
 
 
-try:
-    import torch
-
-    _TORCH_IMPORT_ERROR: Exception | None = None
-except Exception as exc:  # pragma: no cover - depends on host environment.
-    torch = None
-    _TORCH_IMPORT_ERROR = exc
+# Normal inference values. The launch file may override any of these as ROS
+# parameters, but editing this block changes the defaults in one place.
+POLICY_DEFAULTS = {
+    "checkpoint": "",
+    "scan_topic": "/scan",
+    "odometry_topic": "/odometry/filtered",
+    "goal_topic": "/goal_pose",
+    "cmd_vel_topic": "/cmd_vel",
+    "fault_topic": "/hardware/motor_fault",
+    "scan_range_max": 8.0,
+    "odom_frame": "odom",
+    "robot_name": "robot",
+    "control_rate": 10.0,
+    "sensor_timeout": 0.75,
+    "goal_tolerance": 0.25,
+    "collision_distance": 0.08,
+    "footprint_safety_margin": 0.05,
+    "max_goal_distance": 12.0,
+    "max_vx": 0.35,
+    "max_vy": 0.35,
+    "max_wz": 0.80,
+    "max_action_delta": 0.35,
+    "device": "auto",
+}
 
 
 try:
@@ -79,20 +80,12 @@ STATE_GOAL = "GOAL"
 STATE_FAULT = "FAULT"
 
 
-def _require_torch() -> None:
-    if _TORCH_IMPORT_ERROR is not None:
-        raise RuntimeError(
-            "ppo_policy requires PyTorch in the ROS 2 Python environment."
-        ) from _TORCH_IMPORT_ERROR
-
-
 class PolicyNode(RosObservationNode):
     """Load one checkpoint and drive the common ROS navigation interface."""
 
     def __init__(self, *, context: Any | None = None) -> None:
         """Load parameters/checkpoint and start the safe control timer."""
         _require_ros()
-        _require_torch()
 
         # These fields must exist before subscriptions are created in super().
         self.policy_state = STATE_IDLE
@@ -106,31 +99,34 @@ class PolicyNode(RosObservationNode):
         bootstrap_name = "ppo_policy"
         super().__init__(
             node_name=bootstrap_name,
-            scan_topic="/scan",
-            odometry_topic="/odometry/filtered",
-            goal_topic="/goal_pose",
-            cmd_vel_topic="/cmd_vel",
-            fault_topic="/hardware/motor_fault",
-            scan_range_max=8.0,
-            odom_frame="odom",
-            robot_name="robot",
+            scan_topic=POLICY_DEFAULTS["scan_topic"],
+            odometry_topic=POLICY_DEFAULTS["odometry_topic"],
+            goal_topic=POLICY_DEFAULTS["goal_topic"],
+            cmd_vel_topic=POLICY_DEFAULTS["cmd_vel_topic"],
+            fault_topic=POLICY_DEFAULTS["fault_topic"],
+            scan_range_max=POLICY_DEFAULTS["scan_range_max"],
+            odom_frame=POLICY_DEFAULTS["odom_frame"],
+            robot_name=POLICY_DEFAULTS["robot_name"],
             context=context,
             enable_gazebo_services=False,
             declare_topic_parameters=True,
         )
 
-        self.declare_parameter("checkpoint", "")
-        self.declare_parameter("control_rate", 10.0)
-        self.declare_parameter("sensor_timeout", 0.75)
-        self.declare_parameter("goal_tolerance", 0.25)
-        self.declare_parameter("collision_distance", 0.08)
-        self.declare_parameter("footprint_safety_margin", 0.05)
-        self.declare_parameter("max_goal_distance", 12.0)
-        self.declare_parameter("max_vx", 0.35)
-        self.declare_parameter("max_vy", 0.35)
-        self.declare_parameter("max_wz", 0.80)
-        self.declare_parameter("max_action_delta", 0.35)
-        self.declare_parameter("device", "auto")
+        self.declare_parameter("checkpoint", POLICY_DEFAULTS["checkpoint"])
+        for name in (
+            "control_rate",
+            "sensor_timeout",
+            "goal_tolerance",
+            "collision_distance",
+            "footprint_safety_margin",
+            "max_goal_distance",
+            "max_vx",
+            "max_vy",
+            "max_wz",
+            "max_action_delta",
+            "device",
+        ):
+            self.declare_parameter(name, POLICY_DEFAULTS[name])
         checkpoint = str(self.get_parameter("checkpoint").value).strip()
         if not checkpoint:
             raise RuntimeError(
@@ -190,10 +186,20 @@ class PolicyNode(RosObservationNode):
             raise ValueError("collision_distance cannot be negative")
         if self.footprint_safety_margin < 0.0:
             raise ValueError("footprint_safety_margin cannot be negative")
-        self.device = self._choose_device(str(self.get_parameter("device").value))
-        self.network, self.checkpoint = self._load_checkpoint(
+        self.device = choose_device(str(self.get_parameter("device").value))
+        expected_contract = {
+            "version": POLICY_CONTRACT_VERSION,
+            "observation_size": OBSERVATION_SIZE,
+            "action_size": ACTION_SIZE,
+            "laser_sectors": LASER_SECTORS,
+            "scan_range_max": self.scan_range_max,
+            "max_goal_distance": self.max_goal_distance,
+            "action_limits": asdict(self.action_limits),
+        }
+        self.network, self.checkpoint, _ = load_policy(
             Path(checkpoint),
             self.device,
+            expected_contract=expected_contract,
         )
         self.control_timer = self.create_timer(
             1.0 / self.control_rate,
@@ -208,156 +214,6 @@ class PolicyNode(RosObservationNode):
         self.get_logger().info(
             f"PPO policy loaded on {self.device}; waiting for /goal_pose"
         )
-
-    @staticmethod
-    def _choose_device(requested: str) -> Any:
-        requested = requested.strip().lower()
-        if requested not in ("auto", "cpu", "cuda"):
-            raise ValueError("device must be auto, cpu or cuda")
-        if requested == "auto":
-            return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        if requested == "cuda" and not torch.cuda.is_available():
-            raise RuntimeError("CUDA was requested but is unavailable")
-        return torch.device(requested)
-
-    @staticmethod
-    def _torch_load(path: Path, device: Any) -> Any:
-        if not path.is_file():
-            raise FileNotFoundError(f"PPO checkpoint does not exist: {path}")
-        try:
-            return torch.load(path, map_location=device, weights_only=False)
-        except TypeError:  # Compatibility with older PyTorch releases.
-            return torch.load(path, map_location=device)
-
-    def _load_checkpoint(self, path: Path, device: Any) -> tuple[Any, dict[str, Any]]:
-        try:
-            from .network import ActorCritic
-        except ImportError:  # pragma: no cover - direct-script fallback.
-            from network import ActorCritic  # type: ignore
-
-        loaded = self._torch_load(path.resolve(), device)
-        if not isinstance(loaded, dict):
-            raise ValueError("checkpoint must be a dictionary")
-        self._validate_policy_contract(loaded)
-        state_dict = loaded.get("model_state_dict")
-        if state_dict is None:
-            raise KeyError("checkpoint is missing model_state_dict")
-        config = loaded.get("config", {})
-        if not isinstance(config, dict):
-            raise ValueError("checkpoint config must be a dictionary")
-        hidden_dim = int(config.get("hidden_dim", 256))
-        if hidden_dim <= 0:
-            raise ValueError("checkpoint hidden_dim must be positive")
-        configured_observation_size = int(
-            config.get("observation_size", OBSERVATION_SIZE)
-        )
-        configured_action_size = int(config.get("action_size", ACTION_SIZE))
-        if configured_observation_size != OBSERVATION_SIZE:
-            raise ValueError(
-                "checkpoint observation size does not match the current "
-                f"contract ({configured_observation_size} != {OBSERVATION_SIZE})"
-            )
-        if configured_action_size != ACTION_SIZE:
-            raise ValueError(f"checkpoint action size must be {ACTION_SIZE}")
-
-        network = ActorCritic(
-            state_dim=OBSERVATION_SIZE,
-            action_dim=ACTION_SIZE,
-            hidden_dim=hidden_dim,
-        ).to(device)
-        try:
-            network.load_state_dict(state_dict)
-        except RuntimeError as exc:
-            raise ValueError(
-                "checkpoint network shape is incompatible with the current "
-                "45-observation/3-action contract"
-            ) from exc
-        network.eval()
-        return network, loaded
-
-    def _validate_policy_contract(self, checkpoint: dict[str, Any]) -> None:
-        """Require the normalization and action contract used for training."""
-        contract = checkpoint.get("policy_contract")
-        if contract is None and "policy_contract_version" in checkpoint:
-            observation_shape = checkpoint.get("observation_shape", ())
-            action_shape = checkpoint.get("action_shape", ())
-            if not isinstance(observation_shape, (list, tuple)):
-                observation_shape = ()
-            if not isinstance(action_shape, (list, tuple)):
-                action_shape = ()
-            contract = {
-                "version": checkpoint.get("policy_contract_version"),
-                "observation_size": (
-                    observation_shape[0] if len(observation_shape) == 1 else None
-                ),
-                "action_size": action_shape[0] if len(action_shape) == 1 else None,
-                "laser_sectors": checkpoint.get("laser_sectors"),
-                "scan_range_max": checkpoint.get("scan_range_max"),
-                "max_goal_distance": checkpoint.get("max_goal_distance"),
-                "action_limits": checkpoint.get("action_limits"),
-            }
-        if not isinstance(contract, dict):
-            raise ValueError(
-                "checkpoint is missing the versioned policy_contract; retrain "
-                "or migrate it before hardware inference"
-            )
-
-        expected_scalars = {
-            "version": POLICY_CONTRACT_VERSION,
-            "observation_size": OBSERVATION_SIZE,
-            "action_size": ACTION_SIZE,
-            "laser_sectors": LASER_SECTORS,
-        }
-        for key, expected in expected_scalars.items():
-            try:
-                actual = int(contract[key])
-            except (KeyError, TypeError, ValueError) as exc:
-                raise ValueError(f"policy_contract has invalid {key}") from exc
-            if actual != expected:
-                raise ValueError(
-                    f"policy_contract {key} mismatch ({actual} != {expected})"
-                )
-
-        expected_floats = {
-            "scan_range_max": self.scan_range_max,
-            "max_goal_distance": self.max_goal_distance,
-        }
-        for key, expected in expected_floats.items():
-            try:
-                actual = float(contract[key])
-            except (KeyError, TypeError, ValueError) as exc:
-                raise ValueError(f"policy_contract has invalid {key}") from exc
-            if not math.isfinite(actual) or not math.isclose(
-                actual,
-                expected,
-                rel_tol=1e-6,
-                abs_tol=1e-8,
-            ):
-                raise ValueError(
-                    f"policy_contract {key} mismatch ({actual} != {expected})"
-                )
-
-        limits = contract.get("action_limits")
-        if not isinstance(limits, dict):
-            raise ValueError("policy_contract action_limits must be a dictionary")
-        for key in ("max_vx", "max_vy", "max_wz", "max_action_delta"):
-            expected = float(getattr(self.action_limits, key))
-            try:
-                actual = float(limits[key])
-            except (KeyError, TypeError, ValueError) as exc:
-                raise ValueError(
-                    f"policy_contract action_limits has invalid {key}"
-                ) from exc
-            if not math.isfinite(actual) or not math.isclose(
-                actual,
-                expected,
-                rel_tol=1e-6,
-                abs_tol=1e-8,
-            ):
-                raise ValueError(
-                    "policy_contract action limit mismatch for "
-                    f"{key} ({actual} != {expected})"
-                )
 
     def _set_state(self, state: str, reason: str | None = None) -> None:
         if self.policy_state == state:
@@ -545,7 +401,6 @@ class PolicyNode(RosObservationNode):
 def main(args: list[str] | None = None) -> None:
     """ROS console-script entry point."""
     _require_ros()
-    _require_torch()
     rclpy.init(args=args)
     node: PolicyNode | None = None
     try:

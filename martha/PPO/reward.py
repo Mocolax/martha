@@ -11,16 +11,25 @@ import numpy as np
 
 @dataclass(frozen=True)
 class RewardConfig:
-    progress_scale: float = 30.0
-    step_penalty: float = 0.05
-    action_penalty: float = 0.02
-    action_change_penalty: float = 0.04
-    clearance_penalty: float = 0.60
+    """All editable reward weights and physical safety distances."""
+
+    # Scale for the Coulomb-like progress potential (1 / distance).
+    progress_scale: float = 20.0
+    # Avoid an unbounded potential at the goal.  Match the default goal tolerance.
+    progress_distance_floor: float = 0.25
+    # Cost paid on every environment step, even while making progress.
+    step_penalty: float = 0.02
+    # Cost for large normalized commands and abrupt command changes.
+    action_penalty: float = 0.03
+    action_change_penalty: float = 0.05
+    # Quadratic obstacle-proximity cost between both distances below.
+    clearance_penalty: float = 0.20
     clearance_distance: float = 0.65
     collision_distance: float = 0.30
-    goal_reward: float = 120.0
-    collision_penalty: float = 120.0
-    out_of_bounds_penalty: float = 120.0
+    # One-time terminal rewards/costs.
+    goal_reward: float = 110.0
+    collision_penalty: float = 130.0
+    out_of_bounds_penalty: float = 100.0
 
 
 def calculate_reward(
@@ -41,7 +50,18 @@ def calculate_reward(
         raise ValueError("action and previous_action must have shape (3,)")
 
     if math.isfinite(previous_distance) and math.isfinite(distance):
-        progress = previous_distance - distance
+        # The potential is inversely proportional to distance.  Its gradient is
+        # proportional to 1 / distance**2, as in Coulomb's law: equal advances
+        # therefore receive a larger reward when they happen close to the goal.
+        previous_effective_distance = max(
+            previous_distance,
+            config.progress_distance_floor,
+        )
+        effective_distance = max(distance, config.progress_distance_floor)
+        progress = (
+            1.0 / effective_distance
+            - 1.0 / previous_effective_distance
+        )
     else:
         progress = 0.0
     progress_reward = config.progress_scale * progress

@@ -1,3 +1,5 @@
+### ros2 launch martha bringup.launch.py mode:=sim mapping:=true world:=$(ros2 pkg prefix martha)/share/martha/worlds/mundo_4.world
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, GroupAction
 from launch.actions import IncludeLaunchDescription, OpaqueFunction
@@ -116,10 +118,35 @@ def generate_launch_description():
         default_value='true',
         description='Interfaz de Gazebo; solo se usa con mode:=sim',
     )
+    speed_argument = DeclareLaunchArgument(
+        'sim_speed_factor',
+        default_value='1.0',
+        description='Factor de velocidad de Gazebo; solo se usa en simulacion',
+    )
     port_argument = DeclareLaunchArgument(
         'port',
         default_value='/dev/ttyUSB0',
         description='Puerto de la ESP32; solo se usa con mode:=hardware',
+    )
+    lidar_port_argument = DeclareLaunchArgument(
+        'lidar_port',
+        default_value='/dev/rplidar',
+        description='Puerto del RPLIDAR A2M8; solo se usa en hardware',
+    )
+    lidar_frame_argument = DeclareLaunchArgument(
+        'lidar_frame',
+        default_value='lidar',
+        description='Frame del LaserScan; solo se usa en hardware',
+    )
+    lidar_scan_mode_argument = DeclareLaunchArgument(
+        'lidar_scan_mode',
+        default_value='Sensitivity',
+        description='Modo del RPLIDAR A2M8; solo se usa en hardware',
+    )
+    start_lidar_argument = DeclareLaunchArgument(
+        'start_lidar',
+        default_value='true',
+        description='Inicia el RPLIDAR en hardware',
     )
     mapping_argument = DeclareLaunchArgument(
         'mapping',
@@ -139,6 +166,7 @@ def generate_launch_description():
         backend_arguments={
             'world': LaunchConfiguration('world'),
             'gui': LaunchConfiguration('gui'),
+            'sim_speed_factor': LaunchConfiguration('sim_speed_factor'),
         },
         slam_config='SLAM_toolbox_sim.yaml',
         use_sim_time=True,
@@ -149,6 +177,10 @@ def generate_launch_description():
         backend_launch='hardware.launch.py',
         backend_arguments={
             'port': LaunchConfiguration('port'),
+            'lidar_port': LaunchConfiguration('lidar_port'),
+            'lidar_frame': LaunchConfiguration('lidar_frame'),
+            'lidar_scan_mode': LaunchConfiguration('lidar_scan_mode'),
+            'start_lidar': LaunchConfiguration('start_lidar'),
         },
         slam_config='SLAM_toolbox_hardware.yaml',
         use_sim_time=False,
@@ -158,7 +190,12 @@ def generate_launch_description():
         mode_argument,
         world_argument,
         gui_argument,
+        speed_argument,
         port_argument,
+        lidar_port_argument,
+        lidar_frame_argument,
+        lidar_scan_mode_argument,
+        start_lidar_argument,
         mapping_argument,
         rviz_argument,
         OpaqueFunction(function=validate_mode),

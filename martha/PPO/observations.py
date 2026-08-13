@@ -17,15 +17,15 @@ def reduce_laser_scan(
     range_min: float,
     range_max: float,
     sectors: int = 36,
-    angle_min: float | None = None,
-    angle_increment: float | None = None,
+    *,
+    angle_min: float,
+    angle_increment: float,
 ) -> tuple[np.ndarray, float]:
     """
     Min-pool a scan into canonical ``[-pi, pi)`` angular sectors.
 
-    When angular metadata is supplied, the result does not depend on whether a
-    LiDAR starts at zero, starts at ``-pi``, or reports samples clockwise.  The
-    fallback without metadata preserves the input order for synthetic tests.
+    The result does not depend on whether a LiDAR starts at zero, starts at
+    ``-pi``, or reports samples clockwise.
     """
     if sectors <= 0:
         raise ValueError("sectors must be positive")
@@ -38,30 +38,18 @@ def reduce_laser_scan(
     values = np.clip(values, valid_min, valid_max)
     minimum_range = float(np.min(values))
 
-    if angle_min is not None and angle_increment is not None:
-        if not math.isfinite(angle_min) or not math.isfinite(angle_increment):
-            raise ValueError("laser scan angular metadata must be finite")
-        if abs(angle_increment) < 1e-12:
-            raise ValueError("laser scan angle_increment cannot be zero")
-        angles = angle_min + np.arange(values.size) * angle_increment
-        canonical_angles = (angles + math.pi) % (2.0 * math.pi) - math.pi
-        sector_indices = np.floor(
-            (canonical_angles + math.pi) * sectors / (2.0 * math.pi)
-        ).astype(np.int32)
-        sector_indices = np.clip(sector_indices, 0, sectors - 1)
-        sector_values = np.full(sectors, valid_max, dtype=np.float32)
-        np.minimum.at(sector_values, sector_indices, values)
-    else:
-        sector_values = np.empty(sectors, dtype=np.float32)
-        boundaries = np.linspace(0, values.size, sectors + 1, dtype=np.int32)
-        for index in range(sectors):
-            start = int(boundaries[index])
-            stop = int(boundaries[index + 1])
-            if stop <= start:
-                source_index = min(start, values.size - 1)
-                sector_values[index] = values[source_index]
-            else:
-                sector_values[index] = float(np.min(values[start:stop]))
+    if not math.isfinite(angle_min) or not math.isfinite(angle_increment):
+        raise ValueError("laser scan angular metadata must be finite")
+    if abs(angle_increment) < 1e-12:
+        raise ValueError("laser scan angle_increment cannot be zero")
+    angles = angle_min + np.arange(values.size) * angle_increment
+    canonical_angles = (angles + math.pi) % (2.0 * math.pi) - math.pi
+    sector_indices = np.floor(
+        (canonical_angles + math.pi) * sectors / (2.0 * math.pi)
+    ).astype(np.int32)
+    sector_indices = np.clip(sector_indices, 0, sectors - 1)
+    sector_values = np.full(sectors, valid_max, dtype=np.float32)
+    np.minimum.at(sector_values, sector_indices, values)
     return sector_values / valid_max, minimum_range
 
 

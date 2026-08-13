@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
 import math
 from pathlib import Path
@@ -16,17 +16,95 @@ import torch
 
 from .actions import ActionLimits
 from .buffer import RolloutBuffer
-from .logic import PPOLogic
-from .martha_env import (
-    POLICY_CONTRACT_VERSION,
-    MarthaEnv,
+from .checkpoint import (
+    action_limits_from_checkpoint,
+    checkpoint_contract,
+    choose_device,
+    load_checkpoint as load_checkpoint_file,
+    save_checkpoint as save_checkpoint_file,
+    validate_checkpoint as validate_checkpoint_data,
 )
+from .evaluation_core import (
+    advance_path,
+    assert_finite,
+    calculate_spl,
+    episode_path_state,
+    episode_seed,
+    evaluation_score,
+)
+from .logic import PPOLogic
+from .martha_env import MarthaEnv
 from .network import ActorCritic
+from martha.simulation_speed import validate_sim_speed_factor
+
+
+# Edit this block for the normal training setup. Every value can still be
+# overridden temporarily from the command line without changing this file.
+@dataclass(frozen=True)
+class TrainingDefaults:
+    episodes: int = 2000
+    num_envs: int = 4
+    sim_speed_factor: float = 4.0
+    gazebo_gui: bool = False
+    ros_domain_base: int = 50
+    gazebo_port_base: int = 11400
+    worker_startup_timeout: float = 90.0
+    max_steps: int = 600
+    rollout_steps: int = 1024
+    ppo_epochs: int = 8
+    minibatch_size: int = 256
+    lr: float = 2e-5
+    gamma: float = 0.99
+    lam: float = 0.95
+    eps: float = 0.2
+    value_coef: float = 0.5
+    entropy_coef: float = 0.002
+    # Exploration remains constant first, then entropy encouragement fades to
+    # zero so PPO can consolidate a lower variance policy when appropriate.
+    entropy_exploration_fraction: float = 0.25
+    entropy_decay_fraction: float = 0.55
+    reward_scale: float = 0.01
+    max_grad_norm: float = 0.5
+    hidden_dim: int = 256
+    eval_every: int = 100
+    eval_episodes: int = 1
+    eval_max_steps: int = 400
+    eval_map_count: int = 3
+    backend: str = "gazebo"
+    map_mode: str = "random"
+    map_index: int | None = None
+    # Train on one Gazebo map for a block of global episodes before rotating.
+    episodes_per_map: int = 20
+    goal: tuple[float, float] | None = None
+    goal_frame: str = "odom"
+    goal_tolerance: float = 0.25
+    min_goal_distance: float = 2.0
+    max_goal_distance: float = 12.0
+    scan_range_max: float = 8.0
+    max_vx: float = 0.35
+    max_vy: float = 0.35
+    max_wz: float = 0.80
+    max_action_delta: float = 0.35
+    run_name: str | None = None
+    runs_dir: Path = Path.home() / "ros2_ws/src/martha/martha/PPO/ppo_runs"
+    resume: Path | None = None
+    seed: int = 42
+    device: str = "auto"
+
+
+DEFAULTS = TrainingDefaults()
 
 
 METRIC_FIELDS = [
     "episode",
     "episode_reward",
+    "episode_scaled_reward",
+    "reward_progress",
+    "reward_step",
+    "reward_action",
+    "reward_action_change",
+    "reward_clearance",
+    "reward_terminal",
     "episode_length",
     "terminated",
     "truncated",
@@ -39,6 +117,12 @@ METRIC_FIELDS = [
     "actor_loss",
     "critic_loss",
     "entropy",
+    "approx_kl",
+    "clip_fraction",
+    "explained_variance",
+    "policy_std",
+    "actor_saturation",
+    "critic_saturation",
     "eval_mean_reward",
     "eval_success_rate",
     "eval_collision_rate",
@@ -49,13 +133,16 @@ METRIC_FIELDS = [
     "best_eval_mean_reward",
 ]
 
-_EMPTY_UPDATE_STATS = {
-    "loss": 0.0,
-    "actor_loss": 0.0,
-    "critic_loss": 0.0,
-    "entropy": 0.0,
-    "updates": 0,
-}
+REWARD_COMPONENT_NAMES = (
+    "progress",
+    "step",
+    "action",
+    "action_change",
+    "clearance",
+    "terminal",
+)
+
+_EMPTY_UPDATE_STATS = PPOLogic.empty_stats()
 
 _EMPTY_BEST_EVAL = {
     "eval_success_rate": -math.inf,
@@ -66,97 +153,17 @@ _EMPTY_BEST_EVAL = {
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the command-line parser without starting ROS or Gazebo."""
+    """Build the minimal training command-line interface."""
     parser = argparse.ArgumentParser(
         description="Train continuous PPO navigation with MarthaEnv.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--episodes", type=int, default=2000)
-    parser.add_argument("--max-steps", type=int, default=300)
-    parser.add_argument("--rollout-steps", type=int, default=1024)
-    parser.add_argument("--ppo-epochs", type=int, default=8)
-    parser.add_argument("--minibatch-size", type=int, default=256)
-    parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--lam", type=float, default=0.95)
-    parser.add_argument("--eps", type=float, default=0.2)
-    parser.add_argument("--value-coef", type=float, default=0.5)
-    parser.add_argument("--entropy-coef", type=float, default=0.01)
-    parser.add_argument("--max-grad-norm", type=float, default=0.5)
-    parser.add_argument("--hidden-dim", type=int, default=256)
-    parser.add_argument("--eval-every", type=int, default=50)
-    parser.add_argument(
-        "--eval-episodes",
-        type=int,
-        default=2,
-        help="Deterministic evaluation episodes per selected Gazebo map.",
-    )
-    parser.add_argument(
-        "--backend",
-        choices=("gazebo", "hardware"),
-        default="gazebo",
-    )
-    parser.add_argument(
-        "--map-mode",
-        choices=("predefined", "random"),
-        default="random",
-    )
-    parser.add_argument("--map-index", type=int, default=None)
-    parser.add_argument(
-        "--allow-hardware",
-        "--allow-hardware-training",
-        dest="allow_hardware",
-        action="store_true",
-        help=(
-            "Explicitly acknowledge physical training risk, operator "
-            "presence, emergency stop and a controlled test area."
-        ),
-    )
-    parser.add_argument(
-        "--goal",
-        type=float,
-        nargs=2,
-        metavar=("X", "Y"),
-        default=None,
-        help="Required fixed goal for the hardware backend.",
-    )
-    parser.add_argument("--goal-frame", default="odom")
-    parser.add_argument(
-        "--non-interactive-hardware-reset",
-        action="store_true",
-        help=(
-            "Skip the per-episode Enter prompt after accepting responsibility "
-            "for an external physical reset procedure."
-        ),
-    )
-    parser.add_argument("--goal-tolerance", type=float, default=0.25)
-    parser.add_argument("--min-goal-distance", type=float, default=2.0)
-    parser.add_argument("--max-goal-distance", type=float, default=12.0)
-    parser.add_argument("--scan-range-max", type=float, default=8.0)
-    parser.add_argument("--max-vx", type=float, default=0.35)
-    parser.add_argument("--max-vy", type=float, default=0.35)
-    parser.add_argument("--max-wz", type=float, default=0.80)
-    parser.add_argument("--max-action-delta", type=float, default=0.35)
-    parser.add_argument("--run-name", type=str, default=None)
-    parser.add_argument(
-        "--runs-dir",
-        type=Path,
-        default=Path.cwd() / "ppo_runs",
-        help="Base output directory; defaults outside the Python package.",
-    )
     parser.add_argument(
         "--resume",
         type=Path,
-        default=None,
+        default=DEFAULTS.resume,
         help="Resume model, optimizer and episode number from a checkpoint.",
     )
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument(
-        "--device",
-        choices=("auto", "cpu", "cuda"),
-        default="auto",
-    )
-    parser.add_argument("--render-eval", action="store_true")
     return parser
 
 
@@ -164,21 +171,56 @@ def _validate_args(args: argparse.Namespace) -> None:
     """Reject invalid and unsafe settings before creating an environment."""
     positive_ints = {
         "episodes": args.episodes,
+        "num_envs": args.num_envs,
         "max_steps": args.max_steps,
         "rollout_steps": args.rollout_steps,
         "ppo_epochs": args.ppo_epochs,
         "minibatch_size": args.minibatch_size,
         "hidden_dim": args.hidden_dim,
+        "eval_max_steps": args.eval_max_steps,
+        "episodes_per_map": args.episodes_per_map,
     }
     for name, value in positive_ints.items():
         if value <= 0:
-            raise ValueError(f"--{name.replace('_', '-')} must be positive")
-    if args.eval_every < 0 or args.eval_episodes <= 0:
+            raise ValueError(f"TrainingDefaults.{name} must be positive")
+    if (
+        not 0.0 <= args.entropy_exploration_fraction <= 1.0
+        or not 0.0 < args.entropy_decay_fraction <= 1.0
+        or (
+            args.entropy_exploration_fraction
+            + args.entropy_decay_fraction
+            > 1.0
+        )
+    ):
         raise ValueError(
-            "--eval-every must be non-negative and --eval-episodes positive"
+            "entropy exploration and decay fractions must be in [0, 1], "
+            "the decay fraction must be positive, and their sum cannot "
+            "exceed 1"
+        )
+    if (
+        args.eval_every < 0
+        or args.eval_episodes <= 0
+        or args.eval_map_count < 0
+    ):
+        raise ValueError(
+            "TrainingDefaults evaluation intervals must be non-negative and "
+            "eval_episodes positive"
         )
     if args.map_index is not None and args.map_index < 0:
-        raise ValueError("--map-index cannot be negative")
+        raise ValueError("TrainingDefaults.map_index cannot be negative")
+    if args.backend == "hardware" and args.num_envs != 1:
+        raise ValueError("hardware training requires num_envs=1")
+    if not 0 <= args.ros_domain_base <= 232:
+        raise ValueError("ros_domain_base must be in [0, 232]")
+    if args.ros_domain_base + args.num_envs - 1 > 232:
+        raise ValueError("parallel ROS domain IDs cannot exceed 232")
+    if not 1024 <= args.gazebo_port_base <= 65535:
+        raise ValueError("gazebo_port_base must be in [1024, 65535]")
+    if args.gazebo_port_base + args.num_envs - 1 > 65535:
+        raise ValueError("parallel Gazebo ports cannot exceed 65535")
+    if args.worker_startup_timeout <= 0.0:
+        raise ValueError("worker_startup_timeout must be positive")
+    validate_sim_speed_factor(args.sim_speed_factor)
     numeric_values = {
         "lr": args.lr,
         "gamma": args.gamma,
@@ -186,6 +228,9 @@ def _validate_args(args: argparse.Namespace) -> None:
         "eps": args.eps,
         "value-coef": args.value_coef,
         "entropy-coef": args.entropy_coef,
+        "entropy-exploration-fraction": args.entropy_exploration_fraction,
+        "entropy-decay-fraction": args.entropy_decay_fraction,
+        "reward-scale": args.reward_scale,
         "max-grad-norm": args.max_grad_norm,
         "goal-tolerance": args.goal_tolerance,
         "min-goal-distance": args.min_goal_distance,
@@ -195,12 +240,13 @@ def _validate_args(args: argparse.Namespace) -> None:
         "max-vy": args.max_vy,
         "max-wz": args.max_wz,
         "max-action-delta": args.max_action_delta,
+        "worker-startup-timeout": args.worker_startup_timeout,
     }
     for name, value in numeric_values.items():
         if not math.isfinite(float(value)):
-            raise ValueError(f"--{name} must be finite")
+            raise ValueError(f"TrainingDefaults.{name} must be finite")
     if not 0.0 < args.gamma <= 1.0 or not 0.0 <= args.lam <= 1.0:
-        raise ValueError("--gamma must be in (0, 1] and --lam in [0, 1]")
+        raise ValueError("gamma must be in (0, 1] and lam in [0, 1]")
     positive_names = (
         "lr",
         "eps",
@@ -213,50 +259,41 @@ def _validate_args(args: argparse.Namespace) -> None:
         "max-vy",
         "max-wz",
         "max-action-delta",
+        "worker-startup-timeout",
+        "reward-scale",
     )
     if any(numeric_values[name] <= 0.0 for name in positive_names):
         raise ValueError(
             "learning, navigation and sensor limits must be positive"
         )
     if args.value_coef < 0.0 or args.entropy_coef < 0.0:
-        raise ValueError("--value-coef and --entropy-coef cannot be negative")
+        raise ValueError("value_coef and entropy_coef cannot be negative")
     if args.min_goal_distance >= args.max_goal_distance:
         raise ValueError(
-            "--min-goal-distance must be below --max-goal-distance"
+            "min_goal_distance must be below max_goal_distance"
         )
     if args.backend == "hardware":
-        if not args.allow_hardware:
-            raise ValueError(
-                "hardware is disabled by default; pass --allow-hardware only "
-                "with an operator and emergency stop"
-            )
         if args.goal is None:
-            raise ValueError("the hardware backend requires --goal X Y")
+            raise ValueError("hardware training requires TrainingDefaults.goal")
         if not all(math.isfinite(float(value)) for value in args.goal):
             raise ValueError("hardware goal coordinates must be finite")
     elif args.goal is not None:
-        raise ValueError("--goal is reserved for the hardware backend")
+        raise ValueError("goal is reserved for the hardware backend")
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     """Parse and validate training arguments."""
     parser = build_parser()
-    args = parser.parse_args(argv)
+    parsed = parser.parse_args(argv)
+    values = asdict(DEFAULTS)
+    values["resume"] = parsed.resume
+    args = argparse.Namespace(**values)
     try:
         _validate_args(args)
         _action_limits_from_args(args)
     except ValueError as exc:
         parser.error(str(exc))
     return args
-
-
-def choose_device(requested: str) -> torch.device:
-    """Resolve an automatic, CPU or CUDA device request."""
-    if requested == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if requested == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but is unavailable")
-    return torch.device(requested)
 
 
 def set_seed(seed: int) -> None:
@@ -268,93 +305,54 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def episode_seed(base_seed: int, *coordinates: int) -> int:
-    """Derive a deterministic seed from an episode/map coordinate tuple."""
-    value = int(base_seed) & 0xFFFFFFFF
-    for coordinate in coordinates:
-        value ^= (int(coordinate) + 0x9E3779B9) & 0xFFFFFFFF
-        value = (value * 1664525 + 1013904223) & 0xFFFFFFFF
-    return value
+def scale_reward_for_ppo(reward: float, reward_scale: float) -> float:
+    """Scale critic targets without changing environment reward reporting."""
+    scaled = float(reward) * float(reward_scale)
+    if not math.isfinite(scaled):
+        raise FloatingPointError("scaled PPO reward is not finite")
+    return scaled
 
 
-def assert_finite(name: str, value: Any) -> None:
-    """Raise immediately when a policy or optimizer value is non-finite."""
-    if torch.is_tensor(value):
-        finite = bool(torch.isfinite(value).all().item())
-    else:
-        finite = bool(np.isfinite(np.asarray(value, dtype=np.float64)).all())
-    if not finite:
-        raise FloatingPointError(f"{name} contains NaN or infinity")
-
-
-def calculate_spl(
-    success: bool,
-    shortest_path: float | None,
-    path_length: float,
+def entropy_coefficient_for_episode(
+    base_coefficient: float,
+    total_episodes: int,
+    exploration_fraction: float,
+    decay_fraction: float,
+    episode: int,
 ) -> float:
-    """Calculate Success weighted by Path Length for one episode."""
-    if not success:
+    """Return the deterministic three-phase entropy coefficient for PPO.
+
+    The phase durations are percentages of the configured total episode count,
+    not fixed episode counts, wall-clock time, or noisy evaluation results.
+    This makes the schedule scale with run length and remain deterministic for
+    sequential or parallel Gazebo collection.
+    """
+    exploration_end = total_episodes * exploration_fraction
+    decay_duration = total_episodes * decay_fraction
+    if episode <= exploration_end:
+        return float(base_coefficient)
+    if episode >= exploration_end + decay_duration:
         return 0.0
-    if shortest_path is None or not math.isfinite(float(shortest_path)):
-        return math.nan
-    reference = max(0.0, float(shortest_path))
-    travelled = max(0.0, float(path_length))
-    if reference == 0.0:
-        return 1.0
-    return reference / max(reference, travelled)
+    decay_progress = min(
+        max((episode - exploration_end) / decay_duration, 0.0),
+        1.0,
+    )
+    return float(base_coefficient) * (1.0 - decay_progress)
 
 
-def evaluation_score(metrics: dict[str, float]) -> tuple[float, ...]:
-    """Rank policies by success, SPL, safety and only then mean reward."""
-    success = float(metrics.get("eval_success_rate", -math.inf))
-    spl = float(metrics.get("eval_mean_spl", -math.inf))
-    collision = float(metrics.get("eval_collision_rate", math.inf))
-    reward = float(metrics.get("eval_mean_reward", -math.inf))
-    if not math.isfinite(success):
-        success = -math.inf
-    if not math.isfinite(spl):
-        spl = -math.inf
-    if not math.isfinite(collision):
-        collision = math.inf
-    if not math.isfinite(reward):
-        reward = -math.inf
-    return success, spl, -collision, reward
-
-
-def _episode_path_state(
-    reset_info: dict[str, Any],
-) -> tuple[float | None, tuple[float, float] | None, float]:
-    """Initialize the SPL reference and travelled-path accumulator."""
-    shortest_path = reset_info.get("shortest_path")
-    if shortest_path is None:
-        # Hardware has no Gazebo occupancy grid.  Its initial straight-line
-        # distance is the best available lower bound for an online SPL metric.
-        shortest_path = reset_info.get("euclidean_distance")
-    # ``position`` and every step's ``position`` share the episode-local odom
-    # frame.  ``start`` is Gazebo-world metadata and must not be mixed with it.
-    start = reset_info.get("position")
-    previous_position = None
-    if start is not None and len(start) >= 2:
-        previous_position = (float(start[0]), float(start[1]))
-    return shortest_path, previous_position, 0.0
-
-
-def _advance_path(
-    previous_position: tuple[float, float] | None,
-    path_length: float,
-    info: dict[str, Any],
-) -> tuple[tuple[float, float] | None, float]:
-    """Accumulate planar odometry distance from transition information."""
-    position = info.get("position")
-    if position is None or len(position) < 2:
-        return previous_position, path_length
-    current = (float(position[0]), float(position[1]))
-    if previous_position is not None:
-        path_length += math.hypot(
-            current[0] - previous_position[0],
-            current[1] - previous_position[1],
-        )
-    return current, path_length
+def apply_entropy_schedule(
+    ppo: PPOLogic,
+    args: argparse.Namespace,
+    episode: int,
+) -> None:
+    """Set PPO's current entropy weight immediately before an update."""
+    ppo.entropy_coef = entropy_coefficient_for_episode(
+        args.entropy_coef,
+        args.episodes,
+        args.entropy_exploration_fraction,
+        args.entropy_decay_fraction,
+        max(1, episode),
+    )
 
 
 def _action_limits_from_args(args: argparse.Namespace) -> ActionLimits:
@@ -372,190 +370,6 @@ def _action_limits_from_args(args: argparse.Namespace) -> ActionLimits:
     return limits
 
 
-def _action_limits_from_checkpoint(checkpoint: dict[str, Any]) -> ActionLimits:
-    """Read action scaling from a versioned checkpoint."""
-    contract_values = checkpoint.get("policy_contract", {}).get(
-        "action_limits"
-    )
-    compatibility_values = checkpoint.get("action_limits")
-    values = contract_values
-    if values is None:
-        values = compatibility_values
-    if not isinstance(values, dict):
-        raise KeyError("checkpoint is missing action_limits")
-    try:
-        limits = ActionLimits(
-            max_vx=float(values["max_vx"]),
-            max_vy=float(values["max_vy"]),
-            max_wz=float(values["max_wz"]),
-            max_action_delta=float(values["max_action_delta"]),
-        )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("checkpoint action_limits are invalid") from exc
-    if not np.isfinite(limits.as_array()).all() or not math.isfinite(
-        limits.max_action_delta
-    ) or limits.max_action_delta <= 0.0:
-        raise ValueError(
-            "checkpoint action_limits must be finite and positive"
-        )
-    if compatibility_values is not None:
-        if not isinstance(compatibility_values, dict):
-            raise ValueError("checkpoint top-level action_limits are invalid")
-        for key, expected in asdict(limits).items():
-            try:
-                actual = float(compatibility_values[key])
-            except (KeyError, TypeError, ValueError) as exc:
-                raise ValueError(
-                    "checkpoint top-level action_limits are invalid"
-                ) from exc
-            if not math.isfinite(actual) or not math.isclose(
-                actual,
-                expected,
-                rel_tol=0.0,
-                abs_tol=1e-9,
-            ):
-                raise ValueError(
-                    "checkpoint action_limits disagree with policy_contract"
-                )
-    return limits
-
-
-def _policy_contract(env: MarthaEnv) -> dict[str, Any]:
-    """Return the environment's canonical inference contract."""
-    contract = getattr(env, "policy_contract", None)
-    if not isinstance(contract, dict):
-        contract = {
-            "version": POLICY_CONTRACT_VERSION,
-            "observation_size": int(env.observation_space.shape[0]),
-            "action_limits": asdict(env.action_limits),
-        }
-    return dict(contract)
-
-
-def _checkpoint_version(checkpoint: dict[str, Any]) -> int:
-    """Extract the canonical or compatibility policy contract version."""
-    contract = checkpoint.get("policy_contract", {})
-    value = contract.get(
-        "version",
-        checkpoint.get("policy_contract_version"),
-    )
-    if value is None:
-        raise KeyError("checkpoint is missing the policy contract version")
-    return int(value)
-
-
-def validate_checkpoint(
-    checkpoint: dict[str, Any],
-    env: MarthaEnv,
-    *,
-    require_optimizer: bool,
-) -> None:
-    """Validate a checkpoint before loading it into this environment."""
-    if not isinstance(checkpoint, dict):
-        raise ValueError("checkpoint must be a dictionary")
-    if _checkpoint_version(checkpoint) != POLICY_CONTRACT_VERSION:
-        raise ValueError(
-            "checkpoint policy contract version does not match this package"
-        )
-    if "model_state_dict" not in checkpoint:
-        raise KeyError("checkpoint is missing model_state_dict")
-    if require_optimizer and "optimizer_state_dict" not in checkpoint:
-        raise KeyError("resume checkpoint is missing optimizer_state_dict")
-
-    observation_shape = tuple(checkpoint.get("observation_shape", ()))
-    action_shape = tuple(checkpoint.get("action_shape", ()))
-    if observation_shape != tuple(env.observation_space.shape):
-        raise ValueError(
-            f"checkpoint observation shape {observation_shape} does not match "
-            f"{tuple(env.observation_space.shape)}"
-        )
-    if action_shape != tuple(env.action_space.shape):
-        raise ValueError(
-            f"checkpoint action shape {action_shape} does not match "
-            f"{tuple(env.action_space.shape)}"
-        )
-
-    saved_limits = _action_limits_from_checkpoint(checkpoint)
-    if not np.allclose(
-        saved_limits.as_array(),
-        env.action_limits.as_array(),
-        rtol=0.0,
-        atol=1e-9,
-    ) or not math.isclose(
-        saved_limits.max_action_delta,
-        env.action_limits.max_action_delta,
-        rel_tol=0.0,
-        abs_tol=1e-9,
-    ):
-        raise ValueError(
-            "checkpoint action limits do not match the environment"
-        )
-
-    saved_contract = checkpoint.get("policy_contract")
-    expected_contract = _policy_contract(env)
-    if isinstance(saved_contract, dict):
-        for key in (
-            "version",
-            "observation_size",
-            "action_size",
-            "laser_sectors",
-            "scan_range_max",
-            "max_goal_distance",
-        ):
-            if key not in expected_contract:
-                continue
-            saved = saved_contract.get(key)
-            expected = expected_contract[key]
-            if isinstance(expected, float):
-                if saved is None or not math.isclose(
-                    float(saved), expected, rel_tol=0.0, abs_tol=1e-9
-                ):
-                    raise ValueError(
-                        f"checkpoint policy contract mismatch: {key}"
-                    )
-            elif saved != expected:
-                raise ValueError(f"checkpoint policy contract mismatch: {key}")
-        saved_contract_limits = saved_contract.get("action_limits")
-        expected_contract_limits = expected_contract.get("action_limits")
-        if not isinstance(saved_contract_limits, dict) or not isinstance(
-            expected_contract_limits,
-            dict,
-        ):
-            raise ValueError(
-                "policy_contract action_limits must be dictionaries"
-            )
-        for key, expected in expected_contract_limits.items():
-            try:
-                saved = float(saved_contract_limits[key])
-            except (KeyError, TypeError, ValueError) as exc:
-                raise ValueError(
-                    f"checkpoint policy contract mismatch: action_limits.{key}"
-                ) from exc
-            if not math.isclose(
-                saved,
-                float(expected),
-                rel_tol=0.0,
-                abs_tol=1e-9,
-            ):
-                raise ValueError(
-                    f"checkpoint policy contract mismatch: action_limits.{key}"
-                )
-
-
-def _torch_load(path: Path, device: torch.device) -> dict[str, Any]:
-    """Load a checkpoint with compatibility for older PyTorch releases."""
-    path = path.expanduser().resolve()
-    if not path.is_file():
-        raise FileNotFoundError(f"checkpoint does not exist: {path}")
-    try:
-        loaded = torch.load(path, map_location=device, weights_only=False)
-    except TypeError:
-        loaded = torch.load(path, map_location=device)
-    if not isinstance(loaded, dict):
-        raise ValueError("checkpoint must be a dictionary")
-    return loaded
-
-
 def _runtime_value(
     checkpoint: dict[str, Any] | None,
     contract_key: str,
@@ -564,8 +378,7 @@ def _runtime_value(
     """Prefer normalization values saved with a resumed policy."""
     if checkpoint is None:
         return float(fallback)
-    contract = checkpoint.get("policy_contract", {})
-    return float(contract.get(contract_key, fallback))
+    return float(checkpoint_contract(checkpoint)[contract_key])
 
 
 def make_environment(
@@ -573,33 +386,41 @@ def make_environment(
     resume_checkpoint: dict[str, Any] | None,
 ) -> MarthaEnv:
     """Create the sole training/evaluation environment for this process."""
+    return MarthaEnv(**environment_kwargs(args, resume_checkpoint))
+
+
+def environment_kwargs(
+    args: argparse.Namespace,
+    resume_checkpoint: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build identical MarthaEnv settings for local or remote workers."""
     action_limits = (
-        _action_limits_from_checkpoint(resume_checkpoint)
+        action_limits_from_checkpoint(resume_checkpoint)
         if resume_checkpoint is not None
         else _action_limits_from_args(args)
     )
-    return MarthaEnv(
-        action_mode="continuous",
-        render_mode="human" if args.render_eval else None,
-        map_mode=args.map_mode,
-        map_index=args.map_index,
-        backend=args.backend,
-        scan_range_max=_runtime_value(
+    return {
+        "action_mode": "continuous",
+        "render_mode": None,
+        "map_mode": args.map_mode,
+        "map_index": args.map_index,
+        "backend": args.backend,
+        "scan_range_max": _runtime_value(
             resume_checkpoint,
             "scan_range_max",
             args.scan_range_max,
         ),
-        max_steps=args.max_steps,
-        goal_tolerance=args.goal_tolerance,
-        max_goal_distance=_runtime_value(
+        "max_steps": args.max_steps,
+        "goal_tolerance": args.goal_tolerance,
+        "max_goal_distance": _runtime_value(
             resume_checkpoint,
             "max_goal_distance",
             args.max_goal_distance,
         ),
-        min_goal_distance=args.min_goal_distance,
-        action_limits=action_limits,
-        allow_hardware_training=args.allow_hardware,
-    )
+        "min_goal_distance": args.min_goal_distance,
+        "action_limits": action_limits,
+        "allow_hardware_training": args.backend == "hardware",
+    }
 
 
 def build_agent(
@@ -648,6 +469,33 @@ def _resume_hidden_dim(
     return hidden_dim
 
 
+def _validate_resume_reward_scale(
+    args: argparse.Namespace,
+    checkpoint: dict[str, Any] | None,
+) -> None:
+    """Prevent a resumed critic from changing its target scale silently."""
+    if checkpoint is None:
+        return
+    try:
+        saved_scale = float(checkpoint.get("config", {})["reward_scale"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "resume checkpoint has no valid config.reward_scale"
+        ) from exc
+    if not math.isfinite(saved_scale) or saved_scale <= 0.0:
+        raise ValueError("resume checkpoint reward_scale must be positive")
+    if not math.isclose(
+        float(args.reward_scale),
+        saved_scale,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        raise ValueError(
+            "TrainingDefaults.reward_scale must match the checkpoint "
+            f"({args.reward_scale} != {saved_scale})"
+        )
+
+
 def _serializable_config(
     args: argparse.Namespace,
     env: MarthaEnv,
@@ -685,7 +533,6 @@ def save_checkpoint(
     best_eval_metrics: dict[str, float],
 ) -> None:
     """Save policy, optimizer and the complete runtime contract."""
-    action_limits = asdict(env.action_limits)
     checkpoint = {
         "episode": int(episode),
         "model_state_dict": network.state_dict(),
@@ -695,11 +542,7 @@ def save_checkpoint(
         "best_eval_mean_reward": float(
             best_eval_metrics["eval_mean_reward"]
         ),
-        "policy_contract": _policy_contract(env),
-        "policy_contract_version": POLICY_CONTRACT_VERSION,
-        "observation_shape": tuple(env.observation_space.shape),
-        "action_shape": tuple(env.action_space.shape),
-        "action_limits": action_limits,
+        "policy_contract": dict(env.policy_contract),
         "config": _serializable_config(args, env),
         "rng_state": {
             "python": random.getstate(),
@@ -709,8 +552,21 @@ def save_checkpoint(
     }
     if torch.cuda.is_available():
         checkpoint["rng_state"]["cuda"] = torch.cuda.get_rng_state_all()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(checkpoint, path)
+    save_checkpoint_file(path, checkpoint)
+
+
+def _cuda_rng_states_on_cpu(states: Any) -> list[torch.Tensor]:
+    """Return CUDA generator states in the CPU ByteTensor form PyTorch needs."""
+    if not isinstance(states, (list, tuple)):
+        raise ValueError("checkpoint CUDA RNG state must be a list of tensors")
+    normalized = []
+    for state in states:
+        if not torch.is_tensor(state) or state.dtype != torch.uint8:
+            raise ValueError("checkpoint CUDA RNG states must be ByteTensors")
+        # Loading a checkpoint with map_location=cuda also moves these state
+        # bytes to CUDA, but set_rng_state_all explicitly requires CPU tensors.
+        normalized.append(state.detach().cpu())
+    return normalized
 
 
 def _restore_resume_state(
@@ -730,7 +586,9 @@ def _restore_resume_state(
         if "torch" in rng_state:
             torch.set_rng_state(rng_state["torch"].cpu())
         if torch.cuda.is_available() and "cuda" in rng_state:
-            torch.cuda.set_rng_state_all(rng_state["cuda"])
+            torch.cuda.set_rng_state_all(
+                _cuda_rng_states_on_cpu(rng_state["cuda"])
+            )
     start_episode = int(checkpoint.get("episode", 0)) + 1
     saved_best = checkpoint.get("best_eval_metrics")
     if isinstance(saved_best, dict):
@@ -775,11 +633,51 @@ def make_run_dir(args: argparse.Namespace) -> Path:
 def write_metric(path: Path, row: dict[str, Any]) -> None:
     """Append one complete training/evaluation metric row."""
     write_header = not path.exists() or path.stat().st_size == 0
+    if not write_header:
+        with path.open(newline="", encoding="utf-8") as source:
+            previous_fields = csv.DictReader(source).fieldnames
+        if previous_fields != METRIC_FIELDS:
+            raise ValueError(
+                "metrics.csv does not use the current metric schema"
+            )
     with path.open("a", newline="", encoding="utf-8") as output:
         writer = csv.DictWriter(output, fieldnames=METRIC_FIELDS)
         if write_header:
             writer.writeheader()
         writer.writerow(row)
+
+
+def _empty_reward_components() -> dict[str, float]:
+    """Return per-episode accumulators matching ``RewardConfig`` terms."""
+    return {f"reward_{name}": 0.0 for name in REWARD_COMPONENT_NAMES}
+
+
+def _accumulate_reward_components(
+    totals: dict[str, float],
+    info: dict[str, Any],
+) -> None:
+    """Accumulate the environment's reward explanation for one transition."""
+    components = info.get("reward_components", {})
+    if not isinstance(components, dict):
+        return
+    for name in REWARD_COMPONENT_NAMES:
+        value = float(components.get(name, 0.0))
+        if not math.isfinite(value):
+            raise FloatingPointError(f"reward component {name} is not finite")
+        totals[f"reward_{name}"] += value
+
+
+def _generate_training_report(metrics_path: Path) -> None:
+    """Create plots without allowing reporting problems to lose a model."""
+    try:
+        from .analytics import generate_training_report
+
+        report_paths = generate_training_report(metrics_path)
+    except Exception as exc:
+        print(f"WARNING: could not generate training report: {exc}")
+        return
+    for path in report_paths:
+        print(f"Training report: {path}")
 
 
 def _reset_options(
@@ -796,6 +694,121 @@ def _reset_options(
     return {} if world_index is None else {"world_index": world_index}
 
 
+def training_world_index(
+    args: argparse.Namespace,
+    world_count: int,
+    episode: int,
+) -> int | None:
+    """Choose the reproducible Gazebo map for one global training episode."""
+    if args.backend == "hardware":
+        return None
+    if args.map_index is not None:
+        return int(args.map_index)
+    if world_count <= 0:
+        raise ValueError("Gazebo training requires at least one world")
+    if episode <= 0:
+        raise ValueError("training episode must be positive")
+
+    block_index = (episode - 1) // args.episodes_per_map
+    cycle_index, map_position = divmod(block_index, world_count)
+    cycle_seed = episode_seed(args.seed, 2, cycle_index)
+    map_cycle = np.random.default_rng(cycle_seed).permutation(world_count)
+    return int(map_cycle[map_position])
+
+
+def training_reset_options(
+    args: argparse.Namespace,
+    world_count: int,
+    episode: int,
+) -> dict[str, Any]:
+    """Build the reset request for the configured global training episode."""
+    return _reset_options(
+        args,
+        training_world_index(args, world_count, episode),
+    )
+
+
+def _parallel_reset_batch(
+    environments: list[Any],
+    requests: list[tuple[int, int, dict[str, Any]]],
+) -> dict[int, tuple[np.ndarray, dict[str, Any]]]:
+    """Reset isolated workers concurrently and drain every sent request."""
+    sent_indices: list[int] = []
+    send_error: tuple[int, Exception] | None = None
+    for environment_index, seed, options in requests:
+        try:
+            environments[environment_index].send_reset(
+                seed=seed,
+                options=options,
+            )
+            sent_indices.append(environment_index)
+        except Exception as exc:
+            send_error = (environment_index, exc)
+            break
+
+    results: dict[int, tuple[np.ndarray, dict[str, Any]]] = {}
+    receive_errors: list[tuple[int, Exception]] = []
+    for environment_index in sent_indices:
+        try:
+            results[environment_index] = environments[
+                environment_index
+            ].receive_reset()
+        except Exception as exc:
+            receive_errors.append((environment_index, exc))
+
+    if send_error is not None:
+        environment_index, error = send_error
+        raise RuntimeError(
+            f"could not send reset to Gazebo worker {environment_index}"
+        ) from error
+    if receive_errors:
+        indices = ", ".join(str(index) for index, _ in receive_errors)
+        raise RuntimeError(
+            f"Gazebo reset failed in worker(s): {indices}"
+        ) from receive_errors[0][1]
+    return results
+
+
+def _parallel_episode_state(
+    observation: np.ndarray,
+    reset_info: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the mutable accounting state for one parallel episode."""
+    shortest, previous_position, path_length = episode_path_state(reset_info)
+    return {
+        "observation": observation,
+        "shortest": shortest,
+        "previous_position": previous_position,
+        "path_length": path_length,
+        "reward": 0.0,
+        "scaled_reward": 0.0,
+        "reward_components": _empty_reward_components(),
+        "length": 0,
+    }
+
+
+def _parallel_replacement_requests(
+    args: argparse.Namespace,
+    environment_indices: Iterable[int],
+    next_episode: int,
+    world_count: int,
+) -> tuple[list[tuple[int, int, dict[str, Any]]], int]:
+    """Allocate at most the remaining configured parallel episodes."""
+    requests = []
+    for environment_index in environment_indices:
+        if next_episode > args.episodes:
+            break
+        requests.append(
+            (
+                environment_index,
+                episode_seed(args.seed, 0, next_episode),
+                training_reset_options(args, world_count, next_episode),
+            )
+        )
+        next_episode += 1
+    return requests, next_episode
+
+
 def _confirm_hardware_reset(
     args: argparse.Namespace,
     episode_label: str,
@@ -809,19 +822,11 @@ def _confirm_hardware_reset(
         f"({args.goal[0]:.3f}, {args.goal[1]:.3f}) in {args.goal_frame}."
     )
     print(message)
-    if getattr(args, "non_interactive_hardware_reset", False):
-        print(
-            "Continuing under the external reset procedure acknowledged by "
-            "CLI."
-        )
-        return
     try:
         input("Press Enter only when the physical reset is complete: ")
     except EOFError as exc:
         raise RuntimeError(
-            "hardware reset confirmation requires an interactive terminal or "
-            "--non-interactive-hardware-reset with an external safety "
-            "procedure"
+            "hardware reset confirmation requires an interactive terminal"
         ) from exc
 
 
@@ -834,7 +839,16 @@ def _evaluation_worlds(
         return [None]
     if args.map_index is not None:
         return [args.map_index]
-    return list(range(len(env.predefined_maps)))
+    worlds = list(range(len(env.predefined_maps)))
+    count = int(args.eval_map_count)
+    if count == 0 or count >= len(worlds):
+        return worlds
+    return sorted(
+        {
+            int(round(index))
+            for index in np.linspace(0, len(worlds) - 1, count)
+        }
+    )
 
 
 def evaluate_policy(
@@ -852,9 +866,23 @@ def evaluate_policy(
     network.eval()
     try:
         with torch.no_grad():
-            for world_index in _evaluation_worlds(env, args):
+            evaluation_worlds = _evaluation_worlds(env, args)
+            total_scenarios = len(evaluation_worlds) * args.eval_episodes
+            scenario_number = 0
+            for world_index in evaluation_worlds:
                 seed_map_index = -1 if world_index is None else world_index
                 for eval_episode in range(args.eval_episodes):
+                    scenario_number += 1
+                    map_label = "hardware" if world_index is None else str(
+                        world_index + 1
+                    )
+                    print(
+                        f"evaluation={evaluation_round} "
+                        f"scenario={scenario_number}/{total_scenarios} "
+                        f"map={map_label} "
+                        f"episode={eval_episode + 1}/{args.eval_episodes}",
+                        flush=True,
+                    )
                     seed = episode_seed(
                         args.seed,
                         1,
@@ -872,13 +900,13 @@ def evaluate_policy(
                         options=_reset_options(args, world_index),
                     )
                     shortest, previous_position, path_length = (
-                        _episode_path_state(reset_info)
+                        episode_path_state(reset_info)
                     )
                     total_reward = 0.0
                     terminated = False
                     truncated = False
                     info: dict[str, Any] = {}
-                    for step_number in range(1, args.max_steps + 1):
+                    for step_number in range(1, args.eval_max_steps + 1):
                         action, _, _ = network.get_action(
                             observation,
                             deterministic=True,
@@ -889,15 +917,16 @@ def evaluate_policy(
                             env.step(action_array)
                         )
                         total_reward += float(reward)
-                        previous_position, path_length = _advance_path(
+                        previous_position, path_length = advance_path(
                             previous_position,
                             path_length,
                             info,
                         )
-                        if step_number == args.max_steps and not (
+                        if step_number == args.eval_max_steps and not (
                             terminated or truncated
                         ):
                             truncated = True
+                            env.stop()
                         if terminated or truncated:
                             break
                     success = bool(info.get("reached_goal", False))
@@ -931,13 +960,19 @@ def _checkpoint_paths(run_dir: Path) -> tuple[Path, Path, Path]:
 
 
 def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
-    """Run PPO training and close the sole environment on every exit path."""
+    """Run managed Gazebo training or explicitly opted-in hardware training."""
+    if args.backend == "gazebo":
+        return train_gazebo(args)
     _validate_args(args)
     set_seed(args.seed)
     device = choose_device(args.device)
     resume_checkpoint = (
-        None if args.resume is None else _torch_load(args.resume, device)
+        None
+        if args.resume is None
+        else load_checkpoint_file(args.resume, device)
     )
+    if resume_checkpoint is not None:
+        _validate_resume_reward_scale(args, resume_checkpoint)
     run_dir = make_run_dir(args)
     metrics_path, last_model_path, best_model_path = _checkpoint_paths(run_dir)
     env = make_environment(args, resume_checkpoint)
@@ -952,7 +987,11 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
     best_eval_metrics = dict(_EMPTY_BEST_EVAL)
     if resume_checkpoint is not None:
         try:
-            validate_checkpoint(resume_checkpoint, env, require_optimizer=True)
+            validate_checkpoint_data(
+                resume_checkpoint,
+                expected_contract=env.policy_contract,
+                require_optimizer=True,
+            )
             start_episode, best_eval_metrics = _restore_resume_state(
                 resume_checkpoint,
                 network,
@@ -964,7 +1003,7 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
         if start_episode > args.episodes:
             env.close()
             raise ValueError(
-                "--episodes must exceed the episode stored in --resume"
+                "TrainingDefaults.episodes must exceed the resumed episode"
             )
 
     print(f"Device: {device}")
@@ -972,6 +1011,7 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
     print(f"Run directory: {run_dir}")
     print(f"Observation shape: {env.observation_space.shape}")
     print(f"Action shape: {env.action_space.shape}")
+    print(f"PPO reward scale: {args.reward_scale}")
     if args.backend == "hardware":
         print(
             "HARDWARE ENABLED: keep the operator at the emergency stop and "
@@ -986,12 +1026,18 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
             _confirm_hardware_reset(args, f"training episode {episode}")
             observation, reset_info = env.reset(
                 seed=train_seed,
-                options=_reset_options(args, None),
+                options=training_reset_options(
+                    args,
+                    len(env.predefined_maps),
+                    episode,
+                ),
             )
-            shortest, previous_position, path_length = _episode_path_state(
+            shortest, previous_position, path_length = episode_path_state(
                 reset_info
             )
             episode_reward = 0.0
+            episode_scaled_reward = 0.0
+            episode_reward_components = _empty_reward_components()
             episode_length = 0
             terminated = False
             truncated = False
@@ -1027,7 +1073,7 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                     state=observation,
                     action=action_array,
                     logprob=logprob,
-                    reward=reward,
+                    reward=scale_reward_for_ppo(reward, args.reward_scale),
                     value=value,
                     next_value=next_value,
                     terminated=terminated,
@@ -1035,8 +1081,16 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                 )
 
                 episode_reward += float(reward)
+                episode_scaled_reward += scale_reward_for_ppo(
+                    reward,
+                    args.reward_scale,
+                )
+                _accumulate_reward_components(
+                    episode_reward_components,
+                    info,
+                )
                 episode_length = step_number
-                previous_position, path_length = _advance_path(
+                previous_position, path_length = advance_path(
                     previous_position,
                     path_length,
                     info,
@@ -1044,6 +1098,7 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                 observation = next_observation
 
                 if len(buffer) >= args.rollout_steps:
+                    apply_entropy_schedule(ppo, args, episode)
                     last_update_stats = ppo.train_buffer(buffer)
                     for name, stat in last_update_stats.items():
                         assert_finite(name, stat)
@@ -1097,6 +1152,8 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                 {
                     "episode": episode,
                     "episode_reward": episode_reward,
+                    "episode_scaled_reward": episode_scaled_reward,
+                    **episode_reward_components,
                     "episode_length": episode_length,
                     "terminated": int(terminated),
                     "truncated": int(truncated),
@@ -1142,6 +1199,7 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
             )
 
         if len(buffer) > 0:
+            apply_entropy_schedule(ppo, args, completed_episode)
             last_update_stats = ppo.train_buffer(buffer)
             for name, stat in last_update_stats.items():
                 assert_finite(name, stat)
@@ -1171,6 +1229,337 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
     print(f"Metrics: {metrics_path}")
     print(f"Last model: {last_model_path}")
     print(f"Best model: {best_model_path}")
+    _generate_training_report(metrics_path)
+    return network, ppo
+
+
+def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
+    """Train with one or more isolated, trainer-managed Gazebo workers."""
+    from .parallel_env import ParallelGazeboEnvironments
+
+    _validate_args(args)
+    if args.backend != "gazebo":
+        raise ValueError("parallel training requires backend='gazebo'")
+    if args.num_envs > 4:
+        print(
+            "WARNING: more than four Gazebo workers can exhaust system RAM; "
+            "monitor memory and swap.",
+            flush=True,
+        )
+
+    set_seed(args.seed)
+    device = choose_device(args.device)
+    resume_checkpoint = (
+        None
+        if args.resume is None
+        else load_checkpoint_file(args.resume, device)
+    )
+    if resume_checkpoint is not None:
+        _validate_resume_reward_scale(args, resume_checkpoint)
+    run_dir = make_run_dir(args)
+    metrics_path, last_model_path, best_model_path = _checkpoint_paths(run_dir)
+    group = ParallelGazeboEnvironments(
+        count=args.num_envs,
+        ros_domain_base=args.ros_domain_base,
+        gazebo_port_base=args.gazebo_port_base,
+        sim_speed_factor=args.sim_speed_factor,
+        show_gui=args.gazebo_gui,
+        startup_timeout=args.worker_startup_timeout,
+        run_directory=run_dir,
+        environment_kwargs=environment_kwargs(args, resume_checkpoint),
+    )
+    environments = group.environments
+    reference_env = environments[0]
+    try:
+        args.hidden_dim = _resume_hidden_dim(args, resume_checkpoint)
+        network, ppo = build_agent(reference_env, args, device)
+        start_episode = 1
+        best_eval_metrics = dict(_EMPTY_BEST_EVAL)
+        if resume_checkpoint is not None:
+            validate_checkpoint_data(
+                resume_checkpoint,
+                expected_contract=reference_env.policy_contract,
+                require_optimizer=True,
+            )
+            start_episode, best_eval_metrics = _restore_resume_state(
+                resume_checkpoint,
+                network,
+                ppo,
+            )
+        if start_episode > args.episodes:
+            raise ValueError(
+                "TrainingDefaults.episodes must exceed the resumed episode"
+            )
+
+        print(f"Device: {device}")
+        print("Backend: gazebo")
+        print(f"Managed Gazebo environments: {args.num_envs}")
+        print(
+            "Visible Gazebo worker: "
+            + ("0" if args.gazebo_gui else "none")
+        )
+        print(f"Run directory: {run_dir}")
+        print(f"Observation shape: {reference_env.observation_space.shape}")
+        print(f"Action shape: {reference_env.action_space.shape}")
+        print(f"PPO reward scale: {args.reward_scale}")
+
+        buffers = [RolloutBuffer() for _ in environments]
+        active: dict[int, dict[str, Any]] = {}
+        seed_cursor = start_episode
+        initial_count = min(
+            len(environments),
+            args.episodes - start_episode + 1,
+        )
+        initial_requests = []
+        for index in range(initial_count):
+            seed = episode_seed(args.seed, 0, seed_cursor)
+            seed_cursor += 1
+            initial_requests.append(
+                (
+                    index,
+                    seed,
+                    training_reset_options(
+                        args,
+                        len(reference_env.predefined_maps),
+                        seed_cursor - 1,
+                    ),
+                )
+            )
+        initial_results = _parallel_reset_batch(
+            environments,
+            initial_requests,
+        )
+        for index, (observation, reset_info) in initial_results.items():
+            active[index] = _parallel_episode_state(
+                observation,
+                reset_info,
+            )
+
+        last_update_stats = dict(_EMPTY_UPDATE_STATS)
+        completed_episode = start_episode - 1
+        while completed_episode < args.episodes and active:
+            indices = sorted(active)
+            observations = np.stack(
+                [active[index]["observation"] for index in indices]
+            )
+            actions, logprobs, values = network.get_actions(
+                observations,
+                deterministic=False,
+            )
+            action_values = actions.numpy().astype(np.float32)
+            for batch_index, environment_index in enumerate(indices):
+                environments[environment_index].send_step(
+                    action_values[batch_index]
+                )
+
+            transitions = []
+            for environment_index in indices:
+                transitions.append(
+                    environments[environment_index].receive_step()
+                )
+            next_observations = np.stack(
+                [transition[0] for transition in transitions]
+            )
+            next_values = network.get_value(next_observations).numpy().reshape(-1)
+            ended = []
+            for batch_index, environment_index in enumerate(indices):
+                state = active[environment_index]
+                (
+                    next_observation,
+                    reward,
+                    terminated,
+                    truncated,
+                    info,
+                ) = transitions[batch_index]
+                episode_end = bool(terminated or truncated)
+                buffers[environment_index].store(
+                    state=state["observation"],
+                    action=action_values[batch_index],
+                    logprob=logprobs[batch_index],
+                    reward=scale_reward_for_ppo(reward, args.reward_scale),
+                    value=values[batch_index],
+                    next_value=(
+                        0.0 if terminated else next_values[batch_index]
+                    ),
+                    terminated=terminated,
+                    episode_end=episode_end,
+                )
+                state["reward"] += float(reward)
+                state["scaled_reward"] += scale_reward_for_ppo(
+                    reward,
+                    args.reward_scale,
+                )
+                _accumulate_reward_components(
+                    state["reward_components"],
+                    info,
+                )
+                state["length"] += 1
+                state["previous_position"], state["path_length"] = (
+                    advance_path(
+                        state["previous_position"],
+                        state["path_length"],
+                        info,
+                    )
+                )
+                state["observation"] = next_observation
+                if episode_end:
+                    state["terminated"] = bool(terminated)
+                    state["truncated"] = bool(truncated)
+                    state["info"] = info
+                    ended.append(environment_index)
+
+            if sum(len(buffer) for buffer in buffers) >= args.rollout_steps:
+                apply_entropy_schedule(ppo, args, completed_episode + 1)
+                last_update_stats = ppo.train_buffers(buffers)
+                for name, stat in last_update_stats.items():
+                    assert_finite(name, stat)
+
+            for environment_index in ended:
+                state = active.pop(environment_index)
+                info = state["info"]
+                completed_episode += 1
+                success = bool(info.get("reached_goal", False))
+                collision = bool(info.get("collision", False))
+                episode_spl = calculate_spl(
+                    success,
+                    state["shortest"],
+                    state["path_length"],
+                )
+                eval_stats = {
+                    "eval_mean_reward": math.nan,
+                    "eval_success_rate": math.nan,
+                    "eval_collision_rate": math.nan,
+                    "eval_mean_spl": math.nan,
+                }
+                should_evaluate = (
+                    args.eval_every > 0
+                    and completed_episode % args.eval_every == 0
+                )
+                if should_evaluate:
+                    eval_stats = evaluate_policy(
+                        network,
+                        environments[environment_index],
+                        args,
+                        evaluation_round=completed_episode,
+                    )
+                    if evaluation_score(eval_stats) > evaluation_score(
+                        best_eval_metrics
+                    ):
+                        best_eval_metrics = dict(eval_stats)
+                        save_checkpoint(
+                            best_model_path,
+                            network,
+                            ppo,
+                            reference_env,
+                            args,
+                            completed_episode,
+                            best_eval_metrics,
+                        )
+
+                save_checkpoint(
+                    last_model_path,
+                    network,
+                    ppo,
+                    reference_env,
+                    args,
+                    completed_episode,
+                    best_eval_metrics,
+                )
+                write_metric(
+                    metrics_path,
+                    {
+                        "episode": completed_episode,
+                        "episode_reward": state["reward"],
+                        "episode_scaled_reward": state["scaled_reward"],
+                        **state["reward_components"],
+                        "episode_length": state["length"],
+                        "terminated": int(state["terminated"]),
+                        "truncated": int(state["truncated"]),
+                        "reached_goal": int(success),
+                        "collision": int(collision),
+                        "out_of_bounds": int(
+                            bool(info.get("out_of_bounds", False))
+                        ),
+                        "spl": episode_spl,
+                        **last_update_stats,
+                        **eval_stats,
+                        "best_eval_success_rate": best_eval_metrics[
+                            "eval_success_rate"
+                        ],
+                        "best_eval_collision_rate": best_eval_metrics[
+                            "eval_collision_rate"
+                        ],
+                        "best_eval_mean_spl": best_eval_metrics[
+                            "eval_mean_spl"
+                        ],
+                        "best_eval_mean_reward": best_eval_metrics[
+                            "eval_mean_reward"
+                        ],
+                    },
+                )
+                print(
+                    f"episode={completed_episode:5d}"
+                    f" | env={environment_index}"
+                    f" | reward={state['reward']:8.2f}"
+                    f" | len={state['length']:3d}"
+                    f" | success={int(success)}"
+                    f" | collision={int(collision)}"
+                    f" | SPL={episode_spl:.3f}",
+                    flush=True,
+                )
+
+            # ``seed_cursor`` tracks episodes already launched.  Counting only
+            # completed episodes would oversubscribe the final batch because
+            # other workers can still have active episodes.
+            reset_requests, seed_cursor = _parallel_replacement_requests(
+                args,
+                ended,
+                seed_cursor,
+                len(reference_env.predefined_maps),
+            )
+            reset_results = _parallel_reset_batch(
+                environments,
+                reset_requests,
+            )
+            for environment_index, result in reset_results.items():
+                observation, reset_info = result
+                active[environment_index] = _parallel_episode_state(
+                    observation,
+                    reset_info,
+                )
+
+        if sum(len(buffer) for buffer in buffers) > 0:
+            apply_entropy_schedule(ppo, args, completed_episode)
+            last_update_stats = ppo.train_buffers(buffers)
+            for name, stat in last_update_stats.items():
+                assert_finite(name, stat)
+        save_checkpoint(
+            last_model_path,
+            network,
+            ppo,
+            reference_env,
+            args,
+            completed_episode,
+            best_eval_metrics,
+        )
+        if not best_model_path.exists():
+            save_checkpoint(
+                best_model_path,
+                network,
+                ppo,
+                reference_env,
+                args,
+                completed_episode,
+                best_eval_metrics,
+            )
+    finally:
+        group.close()
+
+    print("Gazebo training finished.")
+    print(f"Metrics: {metrics_path}")
+    print(f"Last model: {last_model_path}")
+    print(f"Best model: {best_model_path}")
+    _generate_training_report(metrics_path)
     return network, ppo
 
 
