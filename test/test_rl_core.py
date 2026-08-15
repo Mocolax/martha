@@ -13,7 +13,7 @@ from martha.PPO.observations import (
     goal_features,
     reduce_laser_scan,
 )
-from martha.PPO.reward import RewardConfig, calculate_reward
+from martha.PPO.reward import RewardState, calculate_reward
 from martha.PPO.martha_env import MarthaEnv, fault_topic_for_backend
 from martha.PPO.world_map import BoxObstacle, WorldMap, discover_worlds
 from martha.simulation_speed import (
@@ -75,7 +75,7 @@ def test_failed_reset_state_cannot_authorize_an_old_transition():
     env._closed = False
     env._step_count = 12
     env._previous_action = np.ones(3, dtype=np.float32)
-    env._previous_distance = 4.0
+    env._reward_state = RewardState.initial(4.0)
     env._last_observation = np.ones(45, dtype=np.float32)
     env._last_snapshot = object()
     env._world_map = object()
@@ -86,7 +86,7 @@ def test_failed_reset_state_cannot_authorize_an_old_transition():
 
     assert env._step_count == 0
     np.testing.assert_array_equal(env._previous_action, np.zeros(3))
-    assert math.isinf(env._previous_distance)
+    assert env._reward_state is None
     assert env._last_observation is None
     assert env._last_snapshot is None
     assert env._world_map is None
@@ -410,97 +410,111 @@ def test_observation_has_backend_independent_shape_and_finite_values():
     np.testing.assert_allclose(observation[-6:-3], [0.5, -0.5, 0.5])
 
 
-def test_reward_orders_progress_stationary_and_regression():
-    arguments = {
-        "minimum_scan": 8.0,
-        "action": (0.0, 0.0, 0.0),
-        "previous_action": (0.0, 0.0, 0.0),
-        "reached_goal": False,
-        "collision": False,
-        "out_of_bounds": False,
-    }
-
-    progress, progress_components = calculate_reward(5.0, 4.0, **arguments)
-    stationary, _ = calculate_reward(5.0, 5.0, **arguments)
-    regression, regression_components = calculate_reward(5.0, 6.0, **arguments)
-
-    assert progress > stationary > regression
-    assert progress_components["progress"] > 0.0
-    assert regression_components["progress"] < 0.0
-
-
-def test_coulomb_progress_reward_grows_near_the_goal_and_is_bounded():
-    arguments = {
-        "minimum_scan": 8.0,
-        "action": (0.0, 0.0, 0.0),
-        "previous_action": (0.0, 0.0, 0.0),
-        "reached_goal": False,
-        "collision": False,
-        "out_of_bounds": False,
-    }
-    config = RewardConfig(progress_distance_floor=0.25)
-
-    _, far_components = calculate_reward(5.0, 4.0, config=config, **arguments)
-    _, near_components = calculate_reward(1.0, 0.5, config=config, **arguments)
-    _, capped_components = calculate_reward(
-        0.25,
-        0.0,
-        config=config,
-        **arguments,
+def _paper_reward(
+    state: RewardState,
+    distance: float,
+    *,
+    bearing: float = 0.0,
+    minimum_scan: float = 8.0,
+    angular_velocity: float = 0.0,
+    reached_goal: bool = False,
+    collision: bool = False,
+    out_of_bounds: bool = False,
+    timeout: bool = False,
+):
+    return calculate_reward(
+        state=state,
+        distance=distance,
+        goal_bearing=bearing,
+        minimum_scan=minimum_scan,
+        angular_velocity=angular_velocity,
+        reached_goal=reached_goal,
+        collision=collision,
+        out_of_bounds=out_of_bounds,
+        timeout=timeout,
     )
 
-    assert near_components["progress"] > far_components["progress"]
-    assert capped_components["progress"] == pytest.approx(0.0)
+
+def test_paper_distance_reward_uses_asymmetric_linear_scales():
+    _, approaching, _ = _paper_reward(RewardState.initial(5.0), 4.0)
+    _, retreating, _ = _paper_reward(RewardState.initial(5.0), 6.0)
+
+    assert approaching["distance"] == pytest.approx(0.01)
+    assert retreating["distance"] == pytest.approx(-0.002)
 
 
-def test_goal_bonus_and_collision_penalty_have_terminal_precedence():
-    config = RewardConfig()
-    arguments = {
-        "previous_distance": 0.2,
-        "distance": 0.2,
-        "minimum_scan": 8.0,
-        "action": (0.0, 0.0, 0.0),
-        "previous_action": (0.0, 0.0, 0.0),
-        "out_of_bounds": False,
-        "config": config,
-    }
-
-    neutral, neutral_components = calculate_reward(
-        reached_goal=False,
-        collision=False,
-        **arguments,
-    )
-    goal, goal_components = calculate_reward(
-        reached_goal=True,
-        collision=False,
-        **arguments,
-    )
-    collision, collision_components = calculate_reward(
-        reached_goal=True,
-        collision=True,
-        **arguments,
+def test_paper_orientation_rewards_front_without_penalizing_back():
+    _, front, _ = _paper_reward(RewardState.initial(5.0), 5.0, bearing=0.0)
+    _, back, _ = _paper_reward(
+        RewardState.initial(5.0),
+        5.0,
+        bearing=math.pi,
     )
 
-    assert goal_components["terminal"] == pytest.approx(config.goal_reward)
-    assert collision_components["terminal"] == pytest.approx(
-        -config.collision_penalty
-    )
-    assert neutral_components["terminal"] == 0.0
-    assert goal > neutral > collision
+    assert front["orientation"] == pytest.approx(0.001)
+    assert back["orientation"] == 0.0
 
 
-def test_invalid_geodesic_cannot_cancel_a_collision_penalty():
-    reward, components = calculate_reward(
-        previous_distance=5.0,
-        distance=math.inf,
+def test_paper_shortest_distance_rewards_only_new_episode_records():
+    _, first, state = _paper_reward(RewardState.initial(5.0), 4.0)
+    _, retreat, state = _paper_reward(state, 4.5)
+    _, new_record, state = _paper_reward(state, 3.5)
+
+    assert first["shortest_distance"] == pytest.approx(0.05)
+    assert retreat["shortest_distance"] == 0.0
+    assert new_record["shortest_distance"] == pytest.approx(0.025)
+    assert state.best_distance == pytest.approx(3.5)
+
+
+def test_paper_laser_penalty_is_linear_below_clearance_threshold():
+    _, safe, _ = _paper_reward(RewardState.initial(5.0), 5.0, minimum_scan=0.65)
+    _, close, _ = _paper_reward(RewardState.initial(5.0), 5.0, minimum_scan=0.15)
+
+    assert safe["laser"] == 0.0
+    assert close["laser"] == pytest.approx(-0.005)
+
+
+def test_paper_wiggle_penalty_uses_direct_reversals_in_a_ten_step_window():
+    state = RewardState.initial(5.0)
+    components = {}
+    for angular_velocity in (0.3, -0.3, 0.3, -0.3, 0.3):
+        _, components, state = _paper_reward(
+            state,
+            5.0,
+            angular_velocity=angular_velocity,
+        )
+
+    assert sum(state.reversals) == 4
+    assert components["wiggle"] == pytest.approx(-0.01)
+    _, straight, state = _paper_reward(state, 5.0, angular_velocity=0.0)
+    _, resumed, _ = _paper_reward(state, 5.0, angular_velocity=-0.3)
+    assert straight["wiggle"] == pytest.approx(-0.01)
+    assert resumed["wiggle"] == pytest.approx(-0.01)
+
+
+def test_paper_terminal_and_timeout_rewards_are_exclusive():
+    state = RewardState.initial(0.2)
+    goal, goal_components, _ = _paper_reward(
+        state,
+        0.1,
         minimum_scan=0.1,
-        action=(1.0, 0.0, 0.0),
-        previous_action=(0.0, 0.0, 0.0),
-        reached_goal=False,
+        reached_goal=True,
+    )
+    collision, collision_components, _ = _paper_reward(
+        state,
+        0.1,
+        reached_goal=True,
         collision=True,
-        out_of_bounds=False,
+    )
+    timeout, timeout_components, _ = _paper_reward(
+        state,
+        0.1,
+        timeout=True,
     )
 
-    assert components["progress"] == 0.0
-    assert components["terminal"] == -RewardConfig().collision_penalty
-    assert reward < -RewardConfig().collision_penalty
+    assert goal == pytest.approx(1.0)
+    assert collision == pytest.approx(-0.75)
+    assert timeout == 0.0
+    assert all(value == 0.0 for key, value in goal_components.items() if key != "terminal")
+    assert all(value == 0.0 for key, value in collision_components.items() if key != "terminal")
+    assert all(value == 0.0 for value in timeout_components.values())

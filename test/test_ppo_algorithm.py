@@ -4,6 +4,7 @@ import importlib
 import math
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 
@@ -13,6 +14,7 @@ train_module = importlib.import_module("martha.PPO.train")
 evaluate_module = importlib.import_module("martha.PPO.evaluate")
 
 from martha.PPO.buffer import RolloutBuffer  # noqa: E402
+from martha.PPO.analytics import _load_metrics, _values  # noqa: E402
 from martha.PPO.checkpoint import (  # noqa: E402
     load_policy,
     validate_checkpoint,
@@ -25,6 +27,7 @@ from martha.PPO.martha_env import (  # noqa: E402
     POLICY_CONTRACT_VERSION,
 )
 from martha.PPO.network import ActorCritic  # noqa: E402
+from martha.PPO.reward import RewardConfig  # noqa: E402
 from martha.PPO.parallel_env import (  # noqa: E402
     ParallelWorkerConfig,
     _simulation_launch_command,
@@ -297,6 +300,54 @@ def test_training_metrics_reject_an_old_csv_schema(tmp_path):
 
     with pytest.raises(ValueError, match="current metric schema"):
         write_metric(metrics_path, current_row)
+
+
+def test_paper_reward_metrics_and_legacy_component_reports_are_compatible(tmp_path):
+    assert {
+        "reward_distance",
+        "reward_orientation",
+        "reward_shortest_distance",
+        "reward_laser",
+        "reward_wiggle",
+        "reward_terminal",
+    }.issubset(METRIC_FIELDS)
+
+    metrics_path = tmp_path / "legacy_metrics.csv"
+    metrics_path.write_text("episode,episode_reward\n1,-1.0\n", encoding="utf-8")
+    metrics = _load_metrics(metrics_path)
+    assert np.isnan(_values(metrics, "reward_distance")).all()
+
+
+def test_reward_config_is_restored_from_checkpoint_and_legacy_uses_defaults():
+    config = RewardConfig(wiggle_window_steps=7, laser_clearance_distance=0.7)
+    checkpoint = {"config": {"reward_config": vars(config)}}
+
+    restored = train_module.reward_config_from_checkpoint(checkpoint)
+
+    assert restored == config
+    assert train_module.reward_config_from_checkpoint({"config": {}}) == RewardConfig()
+
+
+def test_checkpoint_configuration_serializes_the_active_reward_config():
+    reward_config = RewardConfig(wiggle_window_steps=7)
+    environment = SimpleNamespace(
+        observation_space=SimpleNamespace(shape=(45,)),
+        action_space=SimpleNamespace(shape=(3,)),
+        policy_contract={"scan_range_max": 8.0},
+        max_goal_distance=12.0,
+        action_limits=SimpleNamespace(
+            max_vx=0.35,
+            max_vy=0.35,
+            max_wz=0.8,
+            max_action_delta=0.35,
+        ),
+        reward_config=reward_config,
+    )
+    args = SimpleNamespace(hidden_dim=256)
+
+    config = train_module._serializable_config(args, environment)
+
+    assert config["reward_config"] == vars(reward_config)
 
 
 def test_reward_scaling_preserves_raw_reward_for_reporting():

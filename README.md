@@ -168,29 +168,33 @@ la secuencia se reconstruye por número de episodio al reanudar. `map_index`, si
 se configura, conserva su prioridad y desactiva la rotación.
 
 La recompensa se configura en `martha/PPO/reward.py`, dentro de
-`RewardConfig`. Para cada step se calcula:
+`RewardConfig`. Sigue la función completa de Jestel et al.,
+[*Obtaining Robust Control and Navigation Policies for Multi-Robot Navigation
+via Deep Reinforcement Learning*](https://arxiv.org/pdf/2209.03097). Para un
+step no terminal se calcula:
 
 ```text
-distancia_efectiva = max(distancia, progress_distance_floor)
-reward = progress_scale * (1 / distancia_efectiva_actual
-                         - 1 / distancia_efectiva_anterior)
-         - step_penalty
-         - action_penalty * promedio(accion^2)
-         - action_change_penalty * promedio((accion - accion_anterior)^2)
-         - clearance_penalty * proximidad^2
-         + terminal
+delta_d = distancia_euclidea_anterior - distancia_euclidea_actual
+distancia = delta_d * (0.002 si delta_d < 0, de otro modo 0.01)
+orientacion = (1 - 2 * abs(angulo_meta) / pi) *
+              0.001, solo si Martha apunta a ±90° de la meta; si no, 0
+record = 0.05 * (mejor_distancia_del_episodio - distancia_actual)
+         solo cuando establece un nuevo récord
+laser = -0.01 * (0.65 - minimo_laser), solo bajo 0.65 m
+zigzag = -0.01, si hay más de 3 reversos directos izquierda-derecha
+          durante las últimas 10 acciones
+reward = distancia + orientacion + record + laser + zigzag
 ```
 
-La parte de progreso usa el potencial inverso de la distancia: su gradiente es
-proporcional a `1 / distancia^2`, por lo que el mismo avance vale más cerca de
-la meta. `progress_distance_floor` (0,25 m por defecto) limita la curva para
-que no haya una singularidad al llegar. `proximidad` vale cero fuera de
-`clearance_distance` y crece hasta uno al llegar a `collision_distance`.
-`terminal` es `goal_reward` al llegar, o el negativo de
-`collision_penalty`/`out_of_bounds_penalty` al fallar. Las acciones son los
-tres comandos normalizados `[vx, vy, wz]` en `[-1, 1]`. Los valores de
-recompensa deben ser finitos y no negativos, y se requiere
-`collision_distance < clearance_distance`.
+La distancia para recompensa es euclídea; la distancia geodésica de Gazebo se
+mantiene únicamente para SPL y las métricas de ruta. Los finales son exclusivos:
+meta `+1.0`, colisión/motor fault/fuera del mapa `-0.75` y timeout `0.0`.
+Una colisión conserva prioridad sobre una señal simultánea de meta. El zigzag
+usa la velocidad angular aplicada: izquierda por encima de `+0.2 rad/s`,
+derecha por debajo de `-0.2 rad/s`; una acción recta corta la secuencia. Esos
+tres parámetros no fueron publicados por el paper y son la adaptación acordada
+para Martha. Los checkpoints nuevos guardan `reward_config`; al reanudar o
+evaluar uno antiguo se usan los valores actuales y aparece una advertencia.
 
 El entrenamiento siempre administra sus propias instancias de Gazebo. No
 inicies `simulation.launch.py` antes de `ppo_train`, ni siquiera cuando

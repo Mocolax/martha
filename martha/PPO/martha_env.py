@@ -31,7 +31,13 @@ from .actions import (
     scale_action,
 )
 from .observations import build_observation, goal_features, reduce_laser_scan
-from .reward import RewardConfig, calculate_reward
+from .reward import (
+    RewardConfig,
+    RewardState,
+    calculate_reward,
+    empty_reward_components,
+    validate_reward_config,
+)
 from .world_map import EpisodeSample, WorldMap, discover_worlds
 
 
@@ -211,34 +217,6 @@ def _validate_action_limits(limits: ActionLimits) -> None:
     )
     if not np.isfinite(values).all() or np.any(values <= 0.0):
         raise ValueError("action velocity and slew limits must be finite and positive")
-
-
-def _validate_reward_config(config: RewardConfig) -> None:
-    """Validate reward shaping before it can affect a training run."""
-    values = np.asarray(tuple(vars(config).values()), dtype=np.float64)
-    if not np.isfinite(values).all():
-        raise ValueError("reward configuration must contain only finite values")
-    nonnegative = (
-        config.progress_scale,
-        config.progress_distance_floor,
-        config.step_penalty,
-        config.action_penalty,
-        config.action_change_penalty,
-        config.clearance_penalty,
-        config.goal_reward,
-        config.collision_penalty,
-        config.out_of_bounds_penalty,
-    )
-    if min(nonnegative) < 0.0 or config.progress_distance_floor <= 0.0:
-        raise ValueError(
-            "reward scales and penalties cannot be negative and "
-            "progress_distance_floor must be positive"
-        )
-    if not 0.0 <= config.collision_distance < config.clearance_distance:
-        raise ValueError(
-            "reward collision_distance must be nonnegative and smaller than "
-            "clearance_distance"
-        )
 
 
 def _yaw_from_quaternion(quaternion: Any) -> float:
@@ -1027,7 +1005,7 @@ class MarthaEnv(_GymEnvBase):
         if footprint_safety_margin < 0.0:
             raise ValueError("footprint_safety_margin cannot be negative")
         _validate_action_limits(action_limits)
-        _validate_reward_config(reward_config)
+        validate_reward_config(reward_config)
         if backend == "hardware" and not allow_hardware_training:
             raise RuntimeError(
                 "Physical training is disabled by default. Use policy_node for "
@@ -1140,7 +1118,7 @@ class MarthaEnv(_GymEnvBase):
         self._episode_sample: EpisodeSample | None = None
         self._step_count = 0
         self._previous_action = np.zeros(ACTION_SIZE, dtype=np.float32)
-        self._previous_distance = math.inf
+        self._reward_state: RewardState | None = None
         self._last_observation: np.ndarray | None = None
         self._last_snapshot: SensorSnapshot | None = None
 
@@ -1463,11 +1441,24 @@ class MarthaEnv(_GymEnvBase):
             )
         return observation, euclidean_distance
 
-    def _distance_for_reward(
+    def _goal_bearing(self, snapshot: SensorSnapshot) -> float:
+        """Return the policy-frame angle from Martha's front to the goal."""
+        _, _, bearing = goal_features(
+            snapshot.x,
+            snapshot.y,
+            snapshot.yaw,
+            snapshot.goal_x,
+            snapshot.goal_y,
+            self.max_goal_distance,
+        )
+        return bearing
+
+    def _distance_for_metrics(
         self,
         snapshot: SensorSnapshot,
         euclidean_distance: float,
     ) -> float:
+        """Return geodesic Gazebo distance only for route metrics and SPL."""
         if self.backend == "gazebo" and self._world_map is not None:
             assert self._distance_field is not None
             assert snapshot.ground_truth_x is not None
@@ -1479,10 +1470,8 @@ class MarthaEnv(_GymEnvBase):
             )
             if math.isfinite(distance):
                 return distance
-            # Never turn an invalid simulator pose into apparent progress by
-            # switching from geodesic to the usually shorter Euclidean metric.
-            # A non-finite distance yields zero progress in calculate_reward;
-            # the collision/out-of-bounds terminal penalty remains dominant.
+            # Do not turn an invalid simulator pose into a shorter metric by
+            # silently switching to Euclidean distance.
             return math.inf
         return euclidean_distance
 
@@ -1719,7 +1708,7 @@ class MarthaEnv(_GymEnvBase):
         """Make ``step`` impossible until the next reset fully succeeds."""
         self._step_count = 0
         self._previous_action = np.zeros(ACTION_SIZE, dtype=np.float32)
-        self._previous_distance = math.inf
+        self._reward_state = None
         self._last_observation = None
         self._last_snapshot = None
         self._world_map = None
@@ -1751,8 +1740,8 @@ class MarthaEnv(_GymEnvBase):
             snapshot,
             policy_distance,
         )
-        distance = self._distance_for_reward(snapshot, euclidean_distance)
-        self._previous_distance = distance
+        distance = self._distance_for_metrics(snapshot, euclidean_distance)
+        self._reward_state = RewardState.initial(euclidean_distance)
         self._last_observation = observation
         self._last_snapshot = snapshot
         info = {
@@ -1785,27 +1774,10 @@ class MarthaEnv(_GymEnvBase):
         }
         return observation, info
 
-    def _timeout_transition(
-        self,
-        action: np.ndarray,
-        previous_action: np.ndarray,
-    ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+    def _timeout_transition(self) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         self.ros.publish_stop()
-        reward, components = calculate_reward(
-            previous_distance=self._previous_distance,
-            distance=self._previous_distance,
-            minimum_scan=(
-                math.inf
-                if self._last_snapshot is None
-                else self._last_snapshot.minimum_scan
-            ),
-            action=action,
-            previous_action=previous_action,
-            reached_goal=False,
-            collision=False,
-            out_of_bounds=False,
-            config=self.reward_config,
-        )
+        reward = 0.0
+        components = empty_reward_components()
         self._previous_action = np.zeros(ACTION_SIZE, dtype=np.float32)
         if self._last_observation is None:
             raise TimeoutError("No valid observation exists after sensor timeout")
@@ -1869,7 +1841,7 @@ class MarthaEnv(_GymEnvBase):
                 after_stamp_ns=command_stamp_ns,
             )
         if snapshot is None:
-            return self._timeout_transition(applied_action, previous_action)
+            return self._timeout_transition()
 
         self._step_count += 1
         self._previous_action = applied_action
@@ -1905,24 +1877,26 @@ class MarthaEnv(_GymEnvBase):
             or motor_fault
         )
         reached_goal = euclidean_distance <= self.goal_tolerance
-        distance = self._distance_for_reward(snapshot, euclidean_distance)
-        reward, components = calculate_reward(
-            previous_distance=self._previous_distance,
-            distance=distance,
+        distance = self._distance_for_metrics(snapshot, euclidean_distance)
+        terminated = bool(reached_goal or collision or out_of_bounds)
+        truncated = bool(not terminated and self._step_count >= self.max_steps)
+        if self._reward_state is None:
+            raise RuntimeError("reward state was not initialized by reset")
+        reward, components, self._reward_state = calculate_reward(
+            state=self._reward_state,
+            distance=euclidean_distance,
+            goal_bearing=self._goal_bearing(snapshot),
             minimum_scan=snapshot.minimum_scan,
-            action=applied_action,
-            previous_action=previous_action,
+            angular_velocity=float(command[2]),
             reached_goal=reached_goal,
             collision=collision,
             out_of_bounds=out_of_bounds,
+            timeout=truncated,
             config=self.reward_config,
         )
-        terminated = bool(reached_goal or collision or out_of_bounds)
-        truncated = bool(not terminated and self._step_count >= self.max_steps)
         if terminated or truncated:
             self.ros.publish_stop()
 
-        self._previous_distance = distance
         self._last_observation = observation
         self._last_snapshot = snapshot
         info = {

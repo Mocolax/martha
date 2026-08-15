@@ -35,6 +35,7 @@ from .evaluation_core import (
 from .logic import PPOLogic
 from .martha_env import MarthaEnv
 from .network import ActorCritic
+from .reward import REWARD_COMPONENT_NAMES, RewardConfig
 from martha.simulation_speed import validate_sim_speed_factor
 
 
@@ -99,11 +100,11 @@ METRIC_FIELDS = [
     "episode",
     "episode_reward",
     "episode_scaled_reward",
-    "reward_progress",
-    "reward_step",
-    "reward_action",
-    "reward_action_change",
-    "reward_clearance",
+    "reward_distance",
+    "reward_orientation",
+    "reward_shortest_distance",
+    "reward_laser",
+    "reward_wiggle",
     "reward_terminal",
     "episode_length",
     "terminated",
@@ -132,15 +133,6 @@ METRIC_FIELDS = [
     "best_eval_mean_spl",
     "best_eval_mean_reward",
 ]
-
-REWARD_COMPONENT_NAMES = (
-    "progress",
-    "step",
-    "action",
-    "action_change",
-    "clearance",
-    "terminal",
-)
 
 _EMPTY_UPDATE_STATS = PPOLogic.empty_stats()
 
@@ -381,6 +373,37 @@ def _runtime_value(
     return float(checkpoint_contract(checkpoint)[contract_key])
 
 
+def reward_config_from_checkpoint(
+    checkpoint: dict[str, Any] | None,
+) -> RewardConfig:
+    """Restore reproducible paper-reward values from a new checkpoint."""
+    if checkpoint is None:
+        return RewardConfig()
+    config = checkpoint.get("config", {})
+    saved = config.get("reward_config") if isinstance(config, dict) else None
+    if saved is None:
+        return RewardConfig()
+    if not isinstance(saved, dict):
+        raise ValueError("checkpoint reward_config must be a dictionary")
+    try:
+        return RewardConfig(**saved)
+    except TypeError as exc:
+        raise ValueError("checkpoint reward_config has invalid fields") from exc
+
+
+def _warn_legacy_reward_config(checkpoint: dict[str, Any] | None) -> None:
+    """Make the intentional paper-reward fallback visible for old runs."""
+    if checkpoint is None:
+        return
+    config = checkpoint.get("config", {})
+    if not isinstance(config, dict) or "reward_config" not in config:
+        print(
+            "WARNING: resumed checkpoint has no reward_config; using the "
+            "current paper reward defaults.",
+            flush=True,
+        )
+
+
 def make_environment(
     args: argparse.Namespace,
     resume_checkpoint: dict[str, Any] | None,
@@ -399,6 +422,7 @@ def environment_kwargs(
         if resume_checkpoint is not None
         else _action_limits_from_args(args)
     )
+    reward_config = reward_config_from_checkpoint(resume_checkpoint)
     return {
         "action_mode": "continuous",
         "render_mode": None,
@@ -419,6 +443,7 @@ def environment_kwargs(
         ),
         "min_goal_distance": args.min_goal_distance,
         "action_limits": action_limits,
+        "reward_config": reward_config,
         "allow_hardware_training": args.backend == "hardware",
     }
 
@@ -519,6 +544,7 @@ def _serializable_config(
         max_vy=float(env.action_limits.max_vy),
         max_wz=float(env.action_limits.max_wz),
         max_action_delta=float(env.action_limits.max_action_delta),
+        reward_config=asdict(env.reward_config),
     )
     return config
 
@@ -971,6 +997,7 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
         if args.resume is None
         else load_checkpoint_file(args.resume, device)
     )
+    _warn_legacy_reward_config(resume_checkpoint)
     if resume_checkpoint is not None:
         _validate_resume_reward_scale(args, resume_checkpoint)
     run_dir = make_run_dir(args)
@@ -1254,6 +1281,7 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
         if args.resume is None
         else load_checkpoint_file(args.resume, device)
     )
+    _warn_legacy_reward_config(resume_checkpoint)
     if resume_checkpoint is not None:
         _validate_resume_reward_scale(args, resume_checkpoint)
     run_dir = make_run_dir(args)

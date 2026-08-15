@@ -28,6 +28,7 @@ from .evaluation_core import (
 )
 from .martha_env import MarthaEnv
 from .network import ActorCritic
+from .reward import RewardConfig
 
 
 # Edit this block to configure standalone evaluation.  The checkpoint is the
@@ -124,6 +125,21 @@ def make_environment(
     """Create the one environment reused for every evaluation episode."""
     contract = checkpoint_contract(checkpoint)
     config = checkpoint["config"]
+    saved_reward_config = config.get("reward_config")
+    if saved_reward_config is None:
+        print(
+            "WARNING: checkpoint has no reward_config; using the current "
+            "paper reward defaults.",
+            flush=True,
+        )
+        reward_config = RewardConfig()
+    elif not isinstance(saved_reward_config, dict):
+        raise ValueError("checkpoint reward_config must be a dictionary")
+    else:
+        try:
+            reward_config = RewardConfig(**saved_reward_config)
+        except TypeError as exc:
+            raise ValueError("checkpoint reward_config has invalid fields") from exc
     return MarthaEnv(
         action_mode="continuous",
         render_mode=None,
@@ -135,6 +151,7 @@ def make_environment(
         max_goal_distance=float(contract["max_goal_distance"]),
         min_goal_distance=float(config["min_goal_distance"]),
         action_limits=action_limits,
+        reward_config=reward_config,
         allow_hardware_training=args.backend == "hardware",
     )
 

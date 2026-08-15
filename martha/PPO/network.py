@@ -18,6 +18,7 @@ class ActorCritic(nn.Module):
             nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
+            
         )
         self.actor_mean = nn.Linear(hidden_dim, action_dim)
         self.actor_logstd = nn.Parameter(torch.full((1, action_dim), math.log(0.5)))

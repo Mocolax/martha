@@ -17,11 +17,11 @@ DEFAULT_RUNS_DIRECTORY = (
 )
 
 REWARD_COMPONENTS = (
-    ("reward_progress", "Progreso"),
-    ("reward_step", "Steps"),
-    ("reward_action", "Acción"),
-    ("reward_action_change", "Cambio de acción"),
-    ("reward_clearance", "Proximidad"),
+    ("reward_distance", "Distancia"),
+    ("reward_orientation", "Orientación"),
+    ("reward_shortest_distance", "Récord de cercanía"),
+    ("reward_laser", "Láser"),
+    ("reward_wiggle", "Zigzag"),
     ("reward_terminal", "Terminal"),
 )
 
@@ -63,6 +63,10 @@ def _values(metrics: dict[str, np.ndarray], name: str) -> np.ndarray:
     try:
         return metrics[name]
     except KeyError as exc:
+        if name.startswith("reward_"):
+            # Component names changed with the paper reward.  Older runs can
+            # still produce their learning report, without a component plot.
+            return np.full(metrics["episode"].shape, np.nan, dtype=np.float64)
         raise ValueError(
             f"metrics CSV is missing current field {name!r}"
         ) from exc
