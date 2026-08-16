@@ -47,8 +47,8 @@ class PPOLogic:
             "clip_fraction": 0.0,
             "explained_variance": 0.0,
             "policy_std": 0.0,
-            "actor_saturation": 0.0,
-            "critic_saturation": 0.0,
+            "actor_inactive_relu": 0.0,
+            "critic_inactive_relu": 0.0,
             "updates": 0,
         }
 

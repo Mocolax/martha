@@ -366,8 +366,8 @@ def generate_training_report(
 
     for name, label in (
         ("explained_variance", "Explained variance"),
-        ("actor_saturation", "Saturación actor"),
-        ("critic_saturation", "Saturación crítico"),
+        ("actor_inactive_relu", "ReLU inactivas actor"),
+        ("critic_inactive_relu", "ReLU inactivas crítico"),
     ):
         _plot_smoothed(axes[1, 1], episodes, _values(metrics, name), label, window)
     axes[1, 1].set_title("Crítico y activaciones")

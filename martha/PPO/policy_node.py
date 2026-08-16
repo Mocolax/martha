@@ -10,7 +10,6 @@ hardware motor fault always produce an immediate zero command.
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from pathlib import Path
 import math
 import time
@@ -27,14 +26,17 @@ from .actions import (
 from .checkpoint import choose_device, load_policy
 from .martha_env import (
     ACTION_SIZE,
-    LASER_SECTORS,
     OBSERVATION_SIZE,
-    POLICY_CONTRACT_VERSION,
     RosObservationNode,
     _require_ros,
+    build_policy_contract,
     scan_hits_footprint,
 )
-from .observations import build_observation, goal_features
+from .observations import (
+    ObservationHistory,
+    build_observation_frame,
+    goal_features,
+)
 
 
 # Normal inference values. The launch file may override any of these as ROS
@@ -92,6 +94,7 @@ class PolicyNode(RosObservationNode):
         self._fault_latched = False
         self._activation_wall_time = time.monotonic()
         self._previous_action = np.zeros(ACTION_SIZE, dtype=np.float32)
+        self._observation_history = ObservationHistory()
         self._closed = False
 
         # Topic names are bootstrap parameters because the subscriptions are
@@ -187,15 +190,11 @@ class PolicyNode(RosObservationNode):
         if self.footprint_safety_margin < 0.0:
             raise ValueError("footprint_safety_margin cannot be negative")
         self.device = choose_device(str(self.get_parameter("device").value))
-        expected_contract = {
-            "version": POLICY_CONTRACT_VERSION,
-            "observation_size": OBSERVATION_SIZE,
-            "action_size": ACTION_SIZE,
-            "laser_sectors": LASER_SECTORS,
-            "scan_range_max": self.scan_range_max,
-            "max_goal_distance": self.max_goal_distance,
-            "action_limits": asdict(self.action_limits),
-        }
+        expected_contract = build_policy_contract(
+            self.scan_range_max,
+            self.max_goal_distance,
+            self.action_limits,
+        )
         self.network, self.checkpoint, _ = load_policy(
             Path(checkpoint),
             self.device,
@@ -226,6 +225,7 @@ class PolicyNode(RosObservationNode):
     def _enter_fault(self, reason: str) -> None:
         self._fault_latched = True
         self._previous_action.fill(0.0)
+        self._observation_history.clear()
         self.publish_stop()
         self._set_state(STATE_FAULT, reason)
 
@@ -240,6 +240,7 @@ class PolicyNode(RosObservationNode):
             return
         self._activation_wall_time = time.monotonic()
         self._previous_action.fill(0.0)
+        self._observation_history.clear()
         self._set_state(STATE_ACTIVE, "new goal")
 
     def _fault_callback(self, message: Any) -> None:
@@ -249,6 +250,7 @@ class PolicyNode(RosObservationNode):
             self._enter_fault("hardware motor fault")
         elif was_faulted:
             self._previous_action.fill(0.0)
+            self._observation_history.clear()
             self.publish_stop()
             self.get_logger().warning(
                 "Motor fault signal cleared; policy remains FAULT until ~/rearm"
@@ -288,6 +290,7 @@ class PolicyNode(RosObservationNode):
             return response
         self._fault_latched = False
         self._previous_action.fill(0.0)
+        self._observation_history.clear()
         self.clear_goal()
         self._set_state(STATE_IDLE, "operator rearmed; new goal required")
         response.success = True
@@ -303,13 +306,16 @@ class PolicyNode(RosObservationNode):
             snapshot.goal_y,
             self.max_goal_distance,
         )
-        observation = build_observation(
+        frame = build_observation_frame(
             snapshot.laser_sectors,
             goal,
             snapshot.velocity,
-            self._previous_action,
             max(self.action_limits.max_vx, self.action_limits.max_vy),
             self.action_limits.max_wz,
+        )
+        observation = self._observation_history.push(
+            frame,
+            min(snapshot.scan_stamp_ns, snapshot.odometry_stamp_ns),
         )
         if observation.shape != (OBSERVATION_SIZE,):
             raise RuntimeError(
@@ -364,6 +370,7 @@ class PolicyNode(RosObservationNode):
             observation, distance = self._observation(snapshot)
             if distance <= self.goal_tolerance:
                 self._previous_action.fill(0.0)
+                self._observation_history.clear()
                 self.publish_stop()
                 self._set_state(STATE_GOAL, f"goal reached at {distance:.3f} m")
                 return

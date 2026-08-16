@@ -24,12 +24,19 @@ from martha.PPO.martha_env import (  # noqa: E402
     ACTION_SIZE,
     LASER_SECTORS,
     OBSERVATION_SIZE,
+    POLICY_ARCHITECTURE,
     POLICY_CONTRACT_VERSION,
 )
 from martha.PPO.network import ActorCritic  # noqa: E402
+from martha.PPO.observations import (  # noqa: E402
+    OBSERVATION_FRAME_SIZE,
+    OBSERVATION_HISTORY_FRAMES,
+    OBSERVATION_HISTORY_SECONDS,
+)
 from martha.PPO.reward import RewardConfig  # noqa: E402
 from martha.PPO.parallel_env import (  # noqa: E402
     ParallelWorkerConfig,
+    RemoteMarthaEnv,
     _simulation_launch_command,
 )
 from martha.PPO.train import (  # noqa: E402
@@ -50,7 +57,7 @@ from martha.PPO.train import (  # noqa: E402
 
 
 def _logic(gamma=0.90, lam=0.80):
-    network = ActorCritic(state_dim=3, action_dim=2, hidden_dim=8)
+    network = ActorCritic()
     return PPOLogic(
         network,
         gamma=gamma,
@@ -188,8 +195,8 @@ def test_rollout_buffer_preserves_terminal_and_episode_end_masks():
 
 def test_actor_critic_action_logprob_and_value_shapes_are_finite():
     torch.manual_seed(7)
-    network = ActorCritic(state_dim=5, action_dim=3, hidden_dim=16)
-    state = torch.linspace(-1.0, 1.0, 5)
+    network = ActorCritic()
+    state = torch.linspace(-1.0, 1.0, OBSERVATION_SIZE)
 
     action, logprob, value = network.get_action(state)
 
@@ -211,8 +218,8 @@ def test_actor_critic_action_logprob_and_value_shapes_are_finite():
 
 
 def test_actor_critic_vectorized_actions_preserve_environment_batch():
-    network = ActorCritic(state_dim=5, action_dim=3, hidden_dim=16)
-    states = torch.randn((4, 5))
+    network = ActorCritic()
+    states = torch.randn((4, OBSERVATION_SIZE))
 
     actions, logprobs, values = network.get_actions(states)
 
@@ -224,15 +231,41 @@ def test_actor_critic_vectorized_actions_preserve_environment_batch():
     assert torch.isfinite(values).all()
 
 
+def test_navigation_encoder_matches_the_multibranch_architecture():
+    extractor = ActorCritic().actor_feature_extractor
+    first_convolution = extractor.laser_branch[0]
+    second_convolution = extractor.laser_branch[2]
+    laser_linear = extractor.laser_branch[5]
+
+    assert first_convolution.in_channels == 4
+    assert first_convolution.out_channels == 16
+    assert first_convolution.kernel_size == (6,)
+    assert first_convolution.stride == (3,)
+    assert second_convolution.in_channels == 16
+    assert second_convolution.out_channels == 32
+    assert second_convolution.kernel_size == (5,)
+    assert second_convolution.stride == (2,)
+    assert laser_linear.in_features == 128
+    assert laser_linear.out_features == 256
+    assert extractor.orientation_branch[0].in_features == 8
+    assert extractor.orientation_branch[0].out_features == 32
+    assert extractor.distance_branch[0].in_features == 4
+    assert extractor.distance_branch[0].out_features == 16
+    assert extractor.velocity_branch[0].in_features == 12
+    assert extractor.velocity_branch[0].out_features == 32
+    assert extractor.fusion[0].in_features == 336
+    assert extractor.fusion[0].out_features == 384
+
+
 def test_actor_and_critic_have_disjoint_parameters_and_gradients():
-    network = ActorCritic(state_dim=5, action_dim=3, hidden_dim=16)
+    network = ActorCritic()
     actor_parameters = list(network.actor_parameters())
     critic_parameters = list(network.critic_parameters())
 
     assert {id(value) for value in actor_parameters}.isdisjoint(
         {id(value) for value in critic_parameters}
     )
-    states = torch.randn((8, 5))
+    states = torch.randn((8, OBSERVATION_SIZE))
     _, values = network(states)
     values.square().mean().backward()
 
@@ -248,12 +281,14 @@ def test_actor_and_critic_have_disjoint_parameters_and_gradients():
 
 
 def test_network_diagnostics_are_finite_and_bounded():
-    network = ActorCritic(state_dim=5, action_dim=3, hidden_dim=16)
+    network = ActorCritic()
 
-    diagnostics = network.diagnostic_stats(torch.randn((32, 5)))
+    diagnostics = network.diagnostic_stats(
+        torch.randn((32, OBSERVATION_SIZE))
+    )
 
     assert diagnostics["policy_std"] > 0.0
-    for name in ("actor_saturation", "critic_saturation"):
+    for name in ("actor_inactive_relu", "critic_inactive_relu"):
         assert 0.0 <= diagnostics[name] <= 1.0
         assert math.isfinite(diagnostics[name])
 
@@ -331,7 +366,7 @@ def test_reward_config_is_restored_from_checkpoint_and_legacy_uses_defaults():
 def test_checkpoint_configuration_serializes_the_active_reward_config():
     reward_config = RewardConfig(wiggle_window_steps=7)
     environment = SimpleNamespace(
-        observation_space=SimpleNamespace(shape=(45,)),
+        observation_space=SimpleNamespace(shape=(OBSERVATION_SIZE,)),
         action_space=SimpleNamespace(shape=(3,)),
         policy_contract={"scan_range_max": 8.0},
         max_goal_distance=12.0,
@@ -343,11 +378,37 @@ def test_checkpoint_configuration_serializes_the_active_reward_config():
         ),
         reward_config=reward_config,
     )
-    args = SimpleNamespace(hidden_dim=256)
+    args = SimpleNamespace()
 
     config = train_module._serializable_config(args, environment)
 
     assert config["reward_config"] == vars(reward_config)
+
+
+def test_remote_environment_exposes_the_worker_reward_config():
+    reward_config = RewardConfig(wiggle_window_steps=7)
+    environment = RemoteMarthaEnv(
+        connection=object(),
+        process=object(),
+        metadata={
+            "observation_low": np.full(OBSERVATION_SIZE, -1.0),
+            "observation_high": np.ones(OBSERVATION_SIZE),
+            "action_low": np.full(ACTION_SIZE, -1.0),
+            "action_high": np.ones(ACTION_SIZE),
+            "action_limits": {
+                "max_vx": 0.35,
+                "max_vy": 0.35,
+                "max_wz": 0.8,
+                "max_action_delta": 0.35,
+            },
+            "reward_config": vars(reward_config),
+            "policy_contract": {},
+            "max_goal_distance": 12.0,
+            "world_count": 9,
+        },
+    )
+
+    assert environment.reward_config == reward_config
 
 
 def test_reward_scaling_preserves_raw_reward_for_reporting():
@@ -557,14 +618,14 @@ def test_training_map_index_override_disables_block_rotation():
 
 def test_tiny_ppo_update_is_finite_and_changes_parameters():
     torch.manual_seed(11)
-    network = ActorCritic(state_dim=5, action_dim=3, hidden_dim=16)
+    network = ActorCritic()
     logic = PPOLogic(
         network,
         lr=1e-3,
         ppo_epochs=2,
         minibatch_size=4,
     )
-    states = torch.randn((8, 5))
+    states = torch.randn((8, OBSERVATION_SIZE))
     samples = [network.get_action(state) for state in states]
     actions = torch.stack([sample[0] for sample in samples])
     old_logprobs = torch.cat([sample[1] for sample in samples])
@@ -594,14 +655,14 @@ def test_tiny_ppo_update_is_finite_and_changes_parameters():
         "clip_fraction",
         "explained_variance",
         "policy_std",
-        "actor_saturation",
-        "critic_saturation",
+        "actor_inactive_relu",
+        "critic_inactive_relu",
     ):
         assert math.isfinite(stats[key])
     assert stats["approx_kl"] >= 0.0
     assert 0.0 <= stats["clip_fraction"] <= 1.0
-    assert 0.0 <= stats["actor_saturation"] <= 1.0
-    assert 0.0 <= stats["critic_saturation"] <= 1.0
+    assert 0.0 <= stats["actor_inactive_relu"] <= 1.0
+    assert 0.0 <= stats["critic_inactive_relu"] <= 1.0
     assert any(
         not torch.equal(before[name], parameter.detach())
         for name, parameter in network.named_parameters()
@@ -612,8 +673,8 @@ def test_parallel_buffers_are_trained_and_cleared_as_independent_traces():
     buffers = [RolloutBuffer(), RolloutBuffer()]
     for index, buffer in enumerate(buffers):
         buffer.store(
-            state=(float(index), 0.0, 1.0),
-            action=(0.1, -0.1),
+            state=np.full(OBSERVATION_SIZE, float(index), dtype=np.float32),
+            action=(0.1, -0.1, 0.0),
             logprob=-0.5,
             reward=float(index + 1),
             value=0.25,
@@ -631,13 +692,13 @@ def test_parallel_buffers_are_trained_and_cleared_as_independent_traces():
 
 def test_state_dict_round_trip_preserves_deterministic_policy(tmp_path):
     torch.manual_seed(23)
-    original = ActorCritic(state_dim=5, action_dim=3, hidden_dim=16)
+    original = ActorCritic()
     checkpoint_path = tmp_path / "policy_state.pt"
     torch.save(original.state_dict(), checkpoint_path)
 
-    restored = ActorCritic(state_dim=5, action_dim=3, hidden_dim=16)
+    restored = ActorCritic()
     restored.load_state_dict(torch.load(checkpoint_path, map_location="cpu"))
-    state = torch.linspace(-0.5, 0.5, 5)
+    state = torch.linspace(-0.5, 0.5, OBSERVATION_SIZE)
     original_action, original_logprob, original_value = original.get_action(
         state,
         deterministic=True,
@@ -653,16 +714,17 @@ def test_state_dict_round_trip_preserves_deterministic_policy(tmp_path):
 
 
 def test_checkpoint_requires_the_canonical_policy_contract(tmp_path):
-    network = ActorCritic(
-        state_dim=OBSERVATION_SIZE,
-        action_dim=ACTION_SIZE,
-        hidden_dim=16,
-    )
+    network = ActorCritic()
     contract = {
         "version": POLICY_CONTRACT_VERSION,
         "observation_size": OBSERVATION_SIZE,
         "action_size": ACTION_SIZE,
         "laser_sectors": LASER_SECTORS,
+        "architecture": POLICY_ARCHITECTURE,
+        "observation_layout": "frame_major",
+        "observation_frame_size": OBSERVATION_FRAME_SIZE,
+        "observation_history_frames": OBSERVATION_HISTORY_FRAMES,
+        "observation_history_seconds": OBSERVATION_HISTORY_SECONDS,
         "scan_range_max": 8.0,
         "max_goal_distance": 12.0,
         "action_limits": {
@@ -675,7 +737,7 @@ def test_checkpoint_requires_the_canonical_policy_contract(tmp_path):
     checkpoint = {
         "model_state_dict": network.state_dict(),
         "policy_contract": contract,
-        "config": {"hidden_dim": 16},
+        "config": {},
     }
     checkpoint_path = tmp_path / "canonical.pt"
     torch.save(checkpoint, checkpoint_path)
@@ -689,7 +751,9 @@ def test_checkpoint_requires_the_canonical_policy_contract(tmp_path):
 
     assert loaded["policy_contract"] == contract
     assert limits.max_vx == pytest.approx(0.35)
-    assert restored.actor_feature_extractor[0].in_features == OBSERVATION_SIZE
+    first_convolution = restored.actor_feature_extractor.laser_branch[0]
+    assert first_convolution.in_channels == OBSERVATION_HISTORY_FRAMES
+    assert first_convolution.kernel_size == (6,)
     with pytest.raises(ValueError, match="missing policy_contract"):
         validate_checkpoint(
             {

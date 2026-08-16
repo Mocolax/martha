@@ -7,6 +7,9 @@ from dataclasses import dataclass
 import numpy as np
 
 
+ACTION_SIZE = 3
+
+
 @dataclass(frozen=True)
 class ActionLimits:
     """Velocity and normalized slew limits used in simulation and hardware."""
@@ -38,8 +41,10 @@ class ActionLimits:
 
 def sanitize_action(action) -> np.ndarray:
     values = np.asarray(action, dtype=np.float32)
-    if values.shape != (3,):
-        raise ValueError(f"expected action shape (3,), got {values.shape}")
+    if values.shape != (ACTION_SIZE,):
+        raise ValueError(
+            f"expected action shape ({ACTION_SIZE},), got {values.shape}"
+        )
     if not np.isfinite(values).all():
         raise FloatingPointError("action contains NaN or infinity")
     return np.clip(values, -1.0, 1.0)

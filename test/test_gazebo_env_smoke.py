@@ -5,6 +5,8 @@ import os
 import numpy as np
 import pytest
 
+from martha.PPO.observations import OBSERVATION_SIZE
+
 
 pytest.importorskip("gymnasium")
 pytest.importorskip("rclpy")
@@ -31,7 +33,7 @@ def test_all_gazebo_worlds_reset_ekf_and_produce_fresh_transitions():
                 seed=7 + world_index,
                 options={"world_index": world_index},
             )
-            assert observation.shape == (45,)
+            assert observation.shape == (OBSERVATION_SIZE,)
             assert np.isfinite(observation).all()
             assert reset_info["world_index"] == world_index
             assert reset_info["position"][:2] == pytest.approx(
@@ -43,7 +45,7 @@ def test_all_gazebo_worlds_reset_ekf_and_produce_fresh_transitions():
             next_observation, reward, terminated, truncated, info = env.step(
                 np.asarray((0.1, 0.0, 0.0), dtype=np.float32)
             )
-            assert next_observation.shape == (45,)
+            assert next_observation.shape == (OBSERVATION_SIZE,)
             assert np.isfinite(next_observation).all()
             assert np.isfinite(reward)
             assert info["world_index"] == world_index

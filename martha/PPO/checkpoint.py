@@ -14,7 +14,13 @@ from .martha_env import (
     ACTION_SIZE,
     LASER_SECTORS,
     OBSERVATION_SIZE,
+    POLICY_ARCHITECTURE,
     POLICY_CONTRACT_VERSION,
+)
+from .observations import (
+    OBSERVATION_FRAME_SIZE,
+    OBSERVATION_HISTORY_FRAMES,
+    OBSERVATION_HISTORY_SECONDS,
 )
 from .network import ActorCritic
 
@@ -24,6 +30,11 @@ REQUIRED_CONTRACT_FIELDS = (
     "observation_size",
     "action_size",
     "laser_sectors",
+    "architecture",
+    "observation_layout",
+    "observation_frame_size",
+    "observation_history_frames",
+    "observation_history_seconds",
     "scan_range_max",
     "max_goal_distance",
     "action_limits",
@@ -99,6 +110,8 @@ def validate_policy_contract(
         "observation_size": OBSERVATION_SIZE,
         "action_size": ACTION_SIZE,
         "laser_sectors": LASER_SECTORS,
+        "observation_frame_size": OBSERVATION_FRAME_SIZE,
+        "observation_history_frames": OBSERVATION_HISTORY_FRAMES,
     }
     for key, required in required_scalars.items():
         try:
@@ -110,13 +123,35 @@ def validate_policy_contract(
                 f"policy_contract {key} mismatch ({actual} != {required})"
             )
 
-    for key in ("scan_range_max", "max_goal_distance"):
+    required_strings = {
+        "architecture": POLICY_ARCHITECTURE,
+        "observation_layout": "frame_major",
+    }
+    for key, required in required_strings.items():
+        if contract.get(key) != required:
+            raise ValueError(
+                f"policy_contract {key} mismatch "
+                f"({contract.get(key)!r} != {required!r})"
+            )
+
+    for key in (
+        "observation_history_seconds",
+        "scan_range_max",
+        "max_goal_distance",
+    ):
         try:
             actual = float(contract[key])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"policy_contract has invalid {key}") from exc
         if not math.isfinite(actual) or actual <= 0.0:
             raise ValueError(f"policy_contract {key} must be positive")
+    if not math.isclose(
+        float(contract["observation_history_seconds"]),
+        OBSERVATION_HISTORY_SECONDS,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    ):
+        raise ValueError("policy_contract observation_history_seconds mismatch")
 
     action_limits_from_checkpoint({"policy_contract": contract})
     if expected is None:
@@ -177,21 +212,7 @@ def load_policy(
     """Load the current network architecture described by a checkpoint."""
     checkpoint = load_checkpoint(checkpoint_path, device)
     validate_checkpoint(checkpoint, expected_contract=expected_contract)
-    contract = checkpoint_contract(checkpoint)
-    config = checkpoint.get("config")
-    if not isinstance(config, dict):
-        raise ValueError("checkpoint config must be a dictionary")
-    try:
-        hidden_dim = int(config["hidden_dim"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("checkpoint config.hidden_dim is invalid") from exc
-    if hidden_dim <= 0:
-        raise ValueError("checkpoint config.hidden_dim must be positive")
-    network = ActorCritic(
-        state_dim=int(contract["observation_size"]),
-        action_dim=int(contract["action_size"]),
-        hidden_dim=hidden_dim,
-    ).to(device)
+    network = ActorCritic().to(device)
     network.load_state_dict(checkpoint["model_state_dict"])
     network.eval()
     return network, checkpoint, action_limits_from_checkpoint(checkpoint)

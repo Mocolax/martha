@@ -44,9 +44,9 @@ from martha.simulation_speed import validate_sim_speed_factor
 @dataclass(frozen=True)
 class TrainingDefaults:
     episodes: int = 2000
-    num_envs: int = 4
-    sim_speed_factor: float = 4.0
-    gazebo_gui: bool = False
+    num_envs: int = 1
+    sim_speed_factor: float = 2.0
+    gazebo_gui: bool = True
     ros_domain_base: int = 50
     gazebo_port_base: int = 11400
     worker_startup_timeout: float = 90.0
@@ -64,9 +64,8 @@ class TrainingDefaults:
     # zero so PPO can consolidate a lower variance policy when appropriate.
     entropy_exploration_fraction: float = 0.25
     entropy_decay_fraction: float = 0.55
-    reward_scale: float = 0.01
+    reward_scale: float = 1
     max_grad_norm: float = 0.5
-    hidden_dim: int = 256
     eval_every: int = 100
     eval_episodes: int = 1
     eval_max_steps: int = 400
@@ -122,8 +121,8 @@ METRIC_FIELDS = [
     "clip_fraction",
     "explained_variance",
     "policy_std",
-    "actor_saturation",
-    "critic_saturation",
+    "actor_inactive_relu",
+    "critic_inactive_relu",
     "eval_mean_reward",
     "eval_success_rate",
     "eval_collision_rate",
@@ -168,7 +167,6 @@ def _validate_args(args: argparse.Namespace) -> None:
         "rollout_steps": args.rollout_steps,
         "ppo_epochs": args.ppo_epochs,
         "minibatch_size": args.minibatch_size,
-        "hidden_dim": args.hidden_dim,
         "eval_max_steps": args.eval_max_steps,
         "episodes_per_map": args.episodes_per_map,
     }
@@ -449,16 +447,11 @@ def environment_kwargs(
 
 
 def build_agent(
-    env: MarthaEnv,
     args: argparse.Namespace,
     device: torch.device,
 ) -> tuple[ActorCritic, PPOLogic]:
     """Build the actor-critic network and PPO optimizer."""
-    network = ActorCritic(
-        state_dim=env.observation_space.shape[0],
-        action_dim=env.action_space.shape[0],
-        hidden_dim=args.hidden_dim,
-    ).to(device)
+    network = ActorCritic().to(device)
     ppo = PPOLogic(
         network=network,
         lr=args.lr,
@@ -472,26 +465,6 @@ def build_agent(
         minibatch_size=args.minibatch_size,
     )
     return network, ppo
-
-
-def _resume_hidden_dim(
-    args: argparse.Namespace,
-    checkpoint: dict[str, Any] | None,
-) -> int:
-    """Use the saved architecture automatically when resuming training."""
-    if checkpoint is None:
-        return int(args.hidden_dim)
-    try:
-        hidden_dim = int(checkpoint.get("config", {})["hidden_dim"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError(
-            "resume checkpoint has no valid config.hidden_dim"
-        ) from exc
-    if hidden_dim <= 0:
-        raise ValueError(
-            "resume checkpoint config.hidden_dim must be positive"
-        )
-    return hidden_dim
 
 
 def _validate_resume_reward_scale(
@@ -537,7 +510,6 @@ def _serializable_config(
     config.update(
         observation_size=int(env.observation_space.shape[0]),
         action_size=int(env.action_space.shape[0]),
-        hidden_dim=int(args.hidden_dim),
         scan_range_max=float(env.policy_contract["scan_range_max"]),
         max_goal_distance=float(env.max_goal_distance),
         max_vx=float(env.action_limits.max_vx),
@@ -1004,8 +976,7 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
     metrics_path, last_model_path, best_model_path = _checkpoint_paths(run_dir)
     env = make_environment(args, resume_checkpoint)
     try:
-        args.hidden_dim = _resume_hidden_dim(args, resume_checkpoint)
-        network, ppo = build_agent(env, args, device)
+        network, ppo = build_agent(args, device)
     except Exception:
         env.close()
         raise
@@ -1299,8 +1270,7 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
     environments = group.environments
     reference_env = environments[0]
     try:
-        args.hidden_dim = _resume_hidden_dim(args, resume_checkpoint)
-        network, ppo = build_agent(reference_env, args, device)
+        network, ppo = build_agent(args, device)
         start_episode = 1
         best_eval_metrics = dict(_EMPTY_BEST_EVAL)
         if resume_checkpoint is not None:

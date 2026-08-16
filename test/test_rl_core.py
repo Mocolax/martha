@@ -9,7 +9,10 @@ import pytest
 
 from martha.PPO.actions import ActionLimits, limit_action_rate
 from martha.PPO.observations import (
-    build_observation,
+    OBSERVATION_FRAME_SIZE,
+    OBSERVATION_SIZE,
+    ObservationHistory,
+    build_observation_frame,
     goal_features,
     reduce_laser_scan,
 )
@@ -75,8 +78,9 @@ def test_failed_reset_state_cannot_authorize_an_old_transition():
     env._closed = False
     env._step_count = 12
     env._previous_action = np.ones(3, dtype=np.float32)
+    env._observation_history = ObservationHistory()
     env._reward_state = RewardState.initial(4.0)
-    env._last_observation = np.ones(45, dtype=np.float32)
+    env._last_observation = np.ones(OBSERVATION_SIZE, dtype=np.float32)
     env._last_snapshot = object()
     env._world_map = object()
     env._distance_field = np.ones((2, 2), dtype=np.float32)
@@ -376,7 +380,7 @@ def test_scan_reduction_is_independent_of_a2m8_sample_density(
     np.testing.assert_allclose(reduced, expected / 8.0)
 
 
-def test_observation_has_backend_independent_shape_and_finite_values():
+def test_observation_frame_has_backend_independent_values():
     scan, _ = reduce_laser_scan(
         np.linspace(0.20, 8.0, 360),
         range_min=0.12,
@@ -393,21 +397,56 @@ def test_observation_has_backend_independent_shape_and_finite_values():
         goal_y=0.0,
         max_goal_distance=10.0,
     )
-    observation = build_observation(
+    frame = build_observation_frame(
         laser_sectors=scan,
         goal=goal,
         velocity=(0.5, -0.5, 0.25),
-        previous_action=(0.25, -0.25, 0.5),
         max_linear_speed=1.0,
         max_angular_speed=0.5,
     )
 
     assert distance == pytest.approx(2.0)
     assert bearing == pytest.approx(-np.pi / 2.0)
-    assert observation.shape == (45,)
-    assert observation.dtype == np.float32
-    assert np.isfinite(observation).all()
-    np.testing.assert_allclose(observation[-6:-3], [0.5, -0.5, 0.5])
+    assert frame.shape == (OBSERVATION_FRAME_SIZE,)
+    assert frame.dtype == np.float32
+    assert np.isfinite(frame).all()
+    np.testing.assert_allclose(frame[-3:], [0.5, -0.5, 0.5])
+
+
+def test_observation_history_spans_one_second_in_frame_order():
+    history = ObservationHistory()
+    frames = [
+        np.full(OBSERVATION_FRAME_SIZE, value, dtype=np.float32)
+        for value in range(4)
+    ]
+
+    first = history.push(frames[0], 0)
+    history.push(frames[1], 333_333_333)
+    history.push(frames[2], 666_666_667)
+    observation = history.push(frames[3], 1_000_000_000)
+
+    np.testing.assert_array_equal(
+        first.reshape(4, OBSERVATION_FRAME_SIZE),
+        np.stack([frames[0]] * 4),
+    )
+    np.testing.assert_array_equal(
+        observation.reshape(4, OBSERVATION_FRAME_SIZE),
+        np.stack(frames),
+    )
+
+
+def test_observation_history_clears_when_ros_time_moves_backwards():
+    history = ObservationHistory()
+    old = np.ones(OBSERVATION_FRAME_SIZE, dtype=np.float32)
+    current = np.full(OBSERVATION_FRAME_SIZE, 2.0, dtype=np.float32)
+    history.push(old, 2_000_000_000)
+
+    observation = history.push(current, 1_000_000_000)
+
+    np.testing.assert_array_equal(
+        observation.reshape(4, OBSERVATION_FRAME_SIZE),
+        np.stack([current] * 4),
+    )
 
 
 def _paper_reward(

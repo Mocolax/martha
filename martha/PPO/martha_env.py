@@ -2,9 +2,9 @@
 Gymnasium environment and ROS I/O shared by simulation and hardware.
 
 The policy-facing contract is intentionally independent from the actuator
-backend: a reduced laser scan, a relative goal, odometry velocity and the
-previous normalized action produce a 45-element observation.  Both Gazebo and
-the physical robot receive the same normalized action through ``/cmd_vel``.
+backend: four LiDAR, relative-goal and odometry frames span one second of ROS
+time. Both Gazebo and the physical robot receive the same normalized action
+through ``/cmd_vel``.
 
 ROS, Gymnasium and Gazebo message packages are optional at import time.  This
 keeps geometry/reward unit tests usable on development hosts without ROS; a
@@ -25,12 +25,23 @@ import xml.etree.ElementTree as ET
 import numpy as np
 
 from .actions import (
+    ACTION_SIZE,
     ActionLimits,
     limit_action_rate,
     sanitize_action,
     scale_action,
 )
-from .observations import build_observation, goal_features, reduce_laser_scan
+from .observations import (
+    LASER_SECTORS,
+    OBSERVATION_FRAME_SIZE,
+    OBSERVATION_HISTORY_FRAMES,
+    OBSERVATION_HISTORY_SECONDS,
+    OBSERVATION_SIZE,
+    ObservationHistory,
+    build_observation_frame,
+    goal_features,
+    reduce_laser_scan,
+)
 from .reward import (
     RewardConfig,
     RewardState,
@@ -100,15 +111,40 @@ except Exception as exc:  # pragma: no cover - depends on the host environment.
     _NodeBase = object
 
 
-LASER_SECTORS = 36
-OBSERVATION_SIZE = LASER_SECTORS + 3 + 3 + 3
-ACTION_SIZE = 3
-POLICY_CONTRACT_VERSION = 1
+POLICY_CONTRACT_VERSION = 2
+POLICY_ARCHITECTURE = "temporal_multibranch"
 PPO_SCENARIO_ENTITY_PREFIX = "martha_ppo_s"
 PPO_GOAL_ENTITY_PREFIX = "martha_ppo_goal_"
 PPO_GOAL_ENTITY_NAME = "martha_ppo_goal_current"
 MAX_RANDOM_RESET_ATTEMPTS = 20
 GAZEBO_CONTROL_SERVICE_ATTEMPTS = 3
+
+
+def build_policy_contract(
+    scan_range_max: float,
+    max_goal_distance: float,
+    action_limits: ActionLimits,
+) -> dict[str, Any]:
+    """Return the complete policy architecture and scaling contract."""
+    return {
+        "version": POLICY_CONTRACT_VERSION,
+        "observation_size": OBSERVATION_SIZE,
+        "action_size": ACTION_SIZE,
+        "laser_sectors": LASER_SECTORS,
+        "architecture": POLICY_ARCHITECTURE,
+        "observation_layout": "frame_major",
+        "observation_frame_size": OBSERVATION_FRAME_SIZE,
+        "observation_history_frames": OBSERVATION_HISTORY_FRAMES,
+        "observation_history_seconds": OBSERVATION_HISTORY_SECONDS,
+        "scan_range_max": float(scan_range_max),
+        "max_goal_distance": float(max_goal_distance),
+        "action_limits": {
+            "max_vx": float(action_limits.max_vx),
+            "max_vy": float(action_limits.max_vy),
+            "max_wz": float(action_limits.max_wz),
+            "max_action_delta": float(action_limits.max_action_delta),
+        },
+    }
 
 
 def scan_hits_footprint(
@@ -1067,10 +1103,11 @@ class MarthaEnv(_GymEnvBase):
             shape=(ACTION_SIZE,),
             dtype=np.float32,
         )
-        observation_low = np.full(OBSERVATION_SIZE, -1.0, dtype=np.float32)
+        frame_low = np.full(OBSERVATION_FRAME_SIZE, -1.0, dtype=np.float32)
+        frame_low[:LASER_SECTORS] = 0.0
+        frame_low[LASER_SECTORS] = 0.0
+        observation_low = np.tile(frame_low, OBSERVATION_HISTORY_FRAMES)
         observation_high = np.ones(OBSERVATION_SIZE, dtype=np.float32)
-        observation_low[:LASER_SECTORS] = 0.0
-        observation_low[LASER_SECTORS] = 0.0
         self.observation_space = spaces.Box(
             low=observation_low,
             high=observation_high,
@@ -1093,22 +1130,11 @@ class MarthaEnv(_GymEnvBase):
             use_sim_time=backend == "gazebo",
         )
         self.ros = self._runtime.node
-        self.policy_contract = {
-            "version": POLICY_CONTRACT_VERSION,
-            "observation_size": OBSERVATION_SIZE,
-            "action_size": ACTION_SIZE,
-            "laser_sectors": LASER_SECTORS,
-            "scan_range_max": self.ros.scan_range_max,
-            "max_goal_distance": self.max_goal_distance,
-            "action_limits": {
-                "max_vx": float(self.action_limits.max_vx),
-                "max_vy": float(self.action_limits.max_vy),
-                "max_wz": float(self.action_limits.max_wz),
-                "max_action_delta": float(
-                    self.action_limits.max_action_delta
-                ),
-            },
-        }
+        self.policy_contract = build_policy_contract(
+            self.ros.scan_range_max,
+            self.max_goal_distance,
+            self.action_limits,
+        )
         self._closed = False
         self._active_world_index: int | None = None
         self._scenario_entity_names: set[str] = set()
@@ -1118,6 +1144,7 @@ class MarthaEnv(_GymEnvBase):
         self._episode_sample: EpisodeSample | None = None
         self._step_count = 0
         self._previous_action = np.zeros(ACTION_SIZE, dtype=np.float32)
+        self._observation_history = ObservationHistory()
         self._reward_state: RewardState | None = None
         self._last_observation: np.ndarray | None = None
         self._last_snapshot: SensorSnapshot | None = None
@@ -1426,13 +1453,16 @@ class MarthaEnv(_GymEnvBase):
             snapshot.goal_y,
             self.max_goal_distance,
         )
-        observation = build_observation(
+        frame = build_observation_frame(
             snapshot.laser_sectors,
             goal,
             snapshot.velocity,
-            self._previous_action,
             max(self.action_limits.max_vx, self.action_limits.max_vy),
             self.action_limits.max_wz,
+        )
+        observation = self._observation_history.push(
+            frame,
+            min(snapshot.scan_stamp_ns, snapshot.odometry_stamp_ns),
         )
         if observation.shape != (OBSERVATION_SIZE,):
             raise RuntimeError(
@@ -1708,6 +1738,7 @@ class MarthaEnv(_GymEnvBase):
         """Make ``step`` impossible until the next reset fully succeeds."""
         self._step_count = 0
         self._previous_action = np.zeros(ACTION_SIZE, dtype=np.float32)
+        self._observation_history.clear()
         self._reward_state = None
         self._last_observation = None
         self._last_snapshot = None
@@ -1968,10 +1999,15 @@ class MarthaEnv(_GymEnvBase):
 __all__ = [
     "ACTION_SIZE",
     "LASER_SECTORS",
+    "OBSERVATION_FRAME_SIZE",
+    "OBSERVATION_HISTORY_FRAMES",
+    "OBSERVATION_HISTORY_SECONDS",
     "OBSERVATION_SIZE",
+    "POLICY_ARCHITECTURE",
     "POLICY_CONTRACT_VERSION",
     "MarthaEnv",
     "RosObservationNode",
     "SensorSnapshot",
+    "build_policy_contract",
     "scan_hits_footprint",
 ]

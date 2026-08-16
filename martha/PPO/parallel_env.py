@@ -16,6 +16,7 @@ import numpy as np
 from gymnasium import spaces
 
 from .actions import ActionLimits
+from .reward import RewardConfig
 
 
 @dataclass(frozen=True)
@@ -119,6 +120,7 @@ def _worker_main(connection: Any, config: ParallelWorkerConfig) -> None:
             "action_low": environment.action_space.low,
             "action_high": environment.action_space.high,
             "action_limits": asdict(environment.action_limits),
+            "reward_config": asdict(environment.reward_config),
             "policy_contract": environment.policy_contract,
             "max_goal_distance": environment.max_goal_distance,
             "world_count": len(environment.predefined_maps),
@@ -194,6 +196,7 @@ class RemoteMarthaEnv:
             dtype=np.float32,
         )
         self.action_limits = ActionLimits(**metadata["action_limits"])
+        self.reward_config = RewardConfig(**metadata["reward_config"])
         self.policy_contract = dict(metadata["policy_contract"])
         self.max_goal_distance = float(metadata["max_goal_distance"])
         self.predefined_maps = tuple(range(int(metadata["world_count"])))

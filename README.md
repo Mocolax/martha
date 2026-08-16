@@ -137,24 +137,24 @@ mapas de ocupación. `MarthaEnv` intercambia sus obstáculos, toma inicios y
 metas aleatorias dentro de espacio libre conectado, teletransporta el robot y
 realinea el EKF en cada episodio.
 
-La observación de 45 valores contiene 36 sectores LiDAR, distancia/rumbo a la
-meta, velocidad y acción previa. No expone ground truth a la política; Gazebo
-ground truth solo se usa para recompensa, colisión y métricas. La recompensa
-combina avance geodésico, penalización por paso, esfuerzo, cambios bruscos,
-proximidad, colisión y llegada.
+La observación contiene cuatro frames distribuidos durante un segundo de tiempo
+ROS. Cada frame reúne 36 sectores LiDAR, distancia normalizada, seno/coseno del
+rumbo y velocidad odométrica `[Vx, Vy, W]`; el vector completo tiene 168
+valores. No expone ground truth a la política; Gazebo ground truth solo se usa
+para recompensa, colisión y métricas. La recompensa combina avance geodésico,
+penalización por paso, esfuerzo, cambios bruscos, proximidad, colisión y llegada.
 
 La cantidad original de puntos de `/scan` no cambia el tamaño del modelo: los
 scans de densidad variable del A2M8 se agrupan angularmente por mínimo en los
-mismos 36 sectores y se limitan al alcance común de 8 m. Por eso los
-checkpoints nuevos conservan el contrato de observacion PPO v1 aunque cambie
-la densidad del LiDAR.
+mismos 36 sectores y se limitan al alcance común de 8 m.
 
-El actor y el critico tienen extractores independientes y sus gradientes se
-recortan por separado. Los checkpoints antiguos de la red compartida no tienen
-las mismas claves de pesos y PyTorch no puede cargarlos; se debe iniciar un run
-nuevo con esta red. La recompensa guardada en el buffer se multiplica por
-`reward_scale` (`0.01` por defecto), pero `episode_reward` conserva la
-recompensa original y `episode_scaled_reward` registra el valor usado por PPO.
+El actor y el crítico tienen extractores multirrama independientes. Cada uno
+procesa los cuatro LiDAR con dos convoluciones 1D, codifica distancia,
+orientación y velocidad en ramas densas, y fusiona las representaciones en 384
+unidades. Sus gradientes se recortan por separado. La recompensa guardada en el
+buffer se multiplica por `reward_scale` (`0.01` por defecto), pero
+`episode_reward` conserva la recompensa original y `episode_scaled_reward`
+registra el valor usado por PPO.
 
 Los valores de entrenamiento estan reunidos al principio de
 `martha/PPO/train.py`, en `TrainingDefaults`. Para cambiar permanentemente el
@@ -253,9 +253,9 @@ Los resultados quedan por defecto en
 automáticamente al finalizar correctamente. El mejor modelo se elige por tasa de éxito,
 SPL, menor tasa de colisión y, al final, recompensa. La ubicación se configura
 con `TrainingDefaults.runs_dir`. `metrics.csv` incluye `approx_kl`,
-`clip_fraction`, `explained_variance`, `policy_std`, `actor_saturation` y
-`critic_saturation` para detectar inestabilidad antes de que la politica deje
-de responder a sus observaciones. Para continuar un checkpoint se debe
+`clip_fraction`, `explained_variance`, `policy_std`, `actor_inactive_relu` y
+`critic_inactive_relu` para detectar inestabilidad antes de que la politica
+deje de responder a sus observaciones. Para continuar un checkpoint se debe
 conservar el mismo `reward_scale`:
 
 ```bash
