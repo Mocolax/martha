@@ -1,0 +1,15 @@
+# Coordenadas locales a cada .world. Agrega al menos ocho puntos validos por
+# mapa. Ejemplo: {id: room_01, x: 1.0, y: 2.0, yaw: null}
+worlds:
+  four_rooms:
+    points: []
+  hall:
+    points: []
+  multi:
+    points: []
+  roblab:
+    points: []
+  room:
+    points: []
+  tube:
+    points: []

@@ -36,7 +36,7 @@ from .reward import RewardConfig
 @dataclass(frozen=True)
 class EvaluationDefaults:
     checkpoint: Path | None = None
-    episodes_per_map: int = 1
+    episodes: int = 1
     max_steps: int = 300
     map_index: int | None = None
     backend: str = "gazebo"
@@ -88,7 +88,7 @@ def _validate_args(args: EvaluationDefaults) -> None:
         raise ValueError(
             "set EvaluationDefaults.checkpoint or pass --checkpoint"
         )
-    if args.episodes_per_map <= 0 or args.max_steps <= 0:
+    if args.episodes <= 0 or args.max_steps <= 0:
         raise ValueError("episode and step counts must be positive")
     if args.map_index is not None and args.map_index < 0:
         raise ValueError("EvaluationDefaults.map_index cannot be negative")
@@ -347,7 +347,7 @@ def evaluate(args: EvaluationDefaults) -> list[dict[str, Any]]:
             )
         with torch.no_grad():
             for map_index in map_indices:
-                for episode in range(1, args.episodes_per_map + 1):
+                for episode in range(1, args.episodes + 1):
                     result = evaluate_episode(
                         network,
                         env,

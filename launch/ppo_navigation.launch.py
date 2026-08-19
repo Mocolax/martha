@@ -52,7 +52,7 @@ def generate_launch_description():
     default_world = PathJoinSubstitution([
         FindPackageShare(package_name),
         "worlds",
-        "mundo_1.world",
+        "room.world",
     ])
     arguments = [
         DeclareLaunchArgument(

@@ -1,4 +1,4 @@
-### ros2 launch martha bringup.launch.py mode:=sim mapping:=true world:=$(ros2 pkg prefix martha)/share/martha/worlds/mundo_4.world
+# Example: ros2 launch martha bringup.launch.py mode:=sim mapping:=true
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, GroupAction
@@ -100,7 +100,7 @@ def generate_launch_description():
     default_world = PathJoinSubstitution([
         FindPackageShare(package_name),
         'worlds',
-        'mundo_1.world',
+        'room.world',
     ])
 
     mode_argument = DeclareLaunchArgument(

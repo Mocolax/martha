@@ -132,17 +132,32 @@ El segundo comando cero debe enviarse después del reconocimiento de la ESP32.
 
 ## Entrenamiento PPO en Gazebo
 
-Los archivos `worlds/mundo_1.world` a `mundo_9.world` son escenarios SDF, no
-mapas de ocupación. `MarthaEnv` intercambia sus obstáculos, toma inicios y
-metas aleatorias dentro de espacio libre conectado, teletransporta el robot y
-realinea el EKF en cada episodio.
+Los escenarios canónicos son `four_rooms`, `hall`, `multi`, `roblab`, `room`
+y `tube`. El entrenamiento genera un único mundo temporal con las seis arenas
+en una cuadrícula 3×2, separadas 30 m, y lanza ocho robots namespaced
+(`martha_0` a `martha_7`) dentro de un solo `gzserver`.
+
+Los inicios y metas se editan únicamente en `config/training_points.yaml`.
+Cada coordenada es local al `.world`; el coordinador aplica el desplazamiento
+de su arena. `x` e `y` son obligatorios y `yaw: null` pide una orientación de
+inicio aleatoria. Un mismo punto puede ser inicio o meta, pero no ambos para la
+misma Martha. Antes de lanzar Gazebo se validan IDs, valores finitos, espacio
+libre, conectividad, distancia mínima y ocho inicios simultáneos separados. No
+hay generación automática: mientras una sección tenga menos de ocho puntos
+válidos, `ppo_train` termina indicando el mapa problemático.
 
 La observación contiene cuatro frames distribuidos durante un segundo de tiempo
 ROS. Cada frame reúne 36 sectores LiDAR, distancia normalizada, seno/coseno del
 rumbo y velocidad odométrica `[Vx, Vy, W]`; el vector completo tiene 168
 valores. No expone ground truth a la política; Gazebo ground truth solo se usa
-para recompensa, colisión y métricas. La recompensa combina avance geodésico,
+para meta, salida del mapa y métricas. La recompensa combina avance,
 penalización por paso, esfuerzo, cambios bruscos, proximidad, colisión y llegada.
+
+Cada robot publica contactos de su huella elevada en
+`/martha_N/contacts` mediante `libgazebo_ros_bumper.so`. Los contactos con
+suelo o con el propio modelo se ignoran; una pared u otra Martha finaliza el
+episodio. Si chocan dos robots, ambos terminan. El LiDAR no decide colisiones:
+se conserva para observación, recompensa de proximidad y validación del reset.
 
 La cantidad original de puntos de `/scan` no cambia el tamaño del modelo: los
 scans de densidad variable del A2M8 se agrupan angularmente por mínimo en los
@@ -158,14 +173,18 @@ registra el valor usado por PPO.
 
 Los valores de entrenamiento estan reunidos al principio de
 `martha/PPO/train.py`, en `TrainingDefaults`. Para cambiar permanentemente el
-numero de Gazebos, velocidad, episodios o hiperparametros, edita ese unico
+numero de robots, velocidad, episodios o hiperparametros, edita ese unico
 bloque. El unico argumento de consola es `--resume`.
 
-Durante entrenamiento Gazebo, `episodes_per_map` (20 por defecto) mantiene el
-mismo mundo durante ese número de episodios globales antes de rotar. Cada ronda
-baraja los nueve mundos con la semilla del entrenamiento y los usa una sola vez;
-la secuencia se reconstruye por número de episodio al reanudar. `map_index`, si
-se configura, conserva su prioridad y desactiva la rotación.
+Las ocho Marthas comparten un escenario durante una ronda. Sus inicios no se
+repiten; cada meta difiere del inicio propio. Al terminar por meta, contacto o
+timeout, el robot se detiene, pierde su marcador y se teletransporta a una
+plaza exclusiva alrededor de `y=-43 m`. Allí espera sin bloquear la arena.
+Cuando termina la última Martha activa comienza la ronda siguiente. Cada ciclo
+baraja los seis escenarios con la semilla del entrenamiento y usa cada uno una
+sola vez. `map_index` fija todas las rondas a un único escenario. `episodes`
+sigue contando episodios individuales, por lo que la última ronda puede activar
+menos de ocho robots.
 
 La recompensa se configura en `martha/PPO/reward.py`, dentro de
 `RewardConfig`. Sigue la función completa de Jestel et al.,
@@ -196,7 +215,7 @@ tres parámetros no fueron publicados por el paper y son la adaptación acordada
 para Martha. Los checkpoints nuevos guardan `reward_config`; al reanudar o
 evaluar uno antiguo se usan los valores actuales y aparece una advertencia.
 
-El entrenamiento siempre administra sus propias instancias de Gazebo. No
+El entrenamiento siempre administra su propia instancia de Gazebo. No
 inicies `simulation.launch.py` antes de `ppo_train`, ni siquiera cuando
 `num_envs=1`. El factor `TrainingDefaults.sim_speed_factor` acepta valores
 mayores que cero hasta `20.0`. Se recomienda probar primero `2.0` y luego
@@ -217,34 +236,20 @@ source install/setup.bash
 ros2 run martha ppo_train
 ```
 
-Con `num_envs=1`, `ppo_train` crea un Gazebo. Con valores mayores crea todas las
-instancias aisladas necesarias. Las evaluaciones periodicas se hacen, por
-defecto, cada 50 episodios sobre 3 mundos fijos, con 1 episodio y como maximo
-400 steps por mundo. Cambia `eval_every`, `eval_map_count`, `num_envs` y
-`sim_speed_factor` en `TrainingDefaults`; `eval_every=0` desactiva la
-evaluacion periodica.
+`TrainingDefaults.num_envs=8` significa cantidad de robots, no cantidad de
+servidores. En cada paso vectorizado el coordinador publica todas las acciones,
+reanuda la física una vez, recibe sensores/contactos frescos y la pausa una
+vez. El único log de simulación queda en `<run>/gazebo.log`. Con
+`gazebo_gui=True`, una ventana muestra las seis arenas y los ocho robots.
+El arranque es secuencial para evitar carreras de Gazebo y puede tardar varios
+minutos con los modelos detallados; `gazebo_startup_timeout` vale 240 s.
 
-Para recolectar experiencia en paralelo, el entrenador crea y cierra una
-instancia aislada de Gazebo por worker, cada una con su propio dominio ROS y
-puerto maestro. Configura `TrainingDefaults.num_envs` y
-`TrainingDefaults.sim_speed_factor` antes de ejecutar `ppo_train`.
-
-`TrainingDefaults.gazebo_gui=True` hace visible solamente el worker 0; los
-demás continúan ejecutándose sin interfaz gráfica. La ventana muestra un único
-episodio activo representativo, no una composición de todos los workers. En
-entrenamiento nunca se debe abrir otro `simulation.launch.py`: la ventana
-visible también la crea y administra `ppo_train`. Para maximizar velocidad usa
-`gazebo_gui=False`.
-
-Empieza con `num_envs=2`; cada instancia adicional
-consume memoria y CPU, por lo que un numero excesivo puede ser mas lento por
-contencion o swap. `sim_speed_factor` aplica a cada worker paralelo. La red y
-el optimizador siguen siendo un unico PPO (en CPU o GPU): solo se paraleliza la
-recoleccion de experiencia. Los steps y los resets de los workers que terminan
-en el mismo lote se despachan concurrentemente; cada reset sigue aislado en su
-propio dominio ROS y puerto Gazebo. Los logs de Gazebo quedan en
-`<run>/parallel_logs/`. Si los dominios o puertos por defecto estan ocupados,
-edita `ros_domain_base` y `gazebo_port_base`.
+Las evaluaciones periódicas esperan el final de una ronda. Siete robots quedan
+aparcados y `martha_0` evalúa la política dentro del mismo `gzserver`. Cambia
+`eval_every`, `eval_map_count`, `num_envs` y `sim_speed_factor` en
+`TrainingDefaults`; `eval_every=0` desactiva la evaluación periódica. En
+entrenamiento no abras otro `simulation.launch.py`: el coordinador es dueño de
+la única simulación.
 
 Los resultados quedan por defecto en
 `~/ros2_ws/src/martha/martha/PPO/ppo_runs/<run>/`: `metrics.csv`,
@@ -351,8 +356,8 @@ Pruebas puras y contractuales:
 python3 -m pytest -q
 ```
 
-Con el launch canónico de simulación ya activo, la prueba live de reset,
-`SetPose`, sensores y un step se habilita explícitamente:
+La prueba live administra su propio Gazebo y comprueba un `gzserver`, las seis
+arenas, ocho Marthas y sus ocho tópicos de contacto independientes:
 
 ```bash
 MARTHA_GAZEBO_SMOKE=1 python3 -m pytest -q -s \

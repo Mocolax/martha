@@ -36,6 +36,7 @@ from .logic import PPOLogic
 from .martha_env import MarthaEnv
 from .network import ActorCritic
 from .reward import REWARD_COMPONENT_NAMES, RewardConfig
+from .training_layout import shuffled_world_index
 from martha.simulation_speed import validate_sim_speed_factor
 
 
@@ -44,12 +45,11 @@ from martha.simulation_speed import validate_sim_speed_factor
 @dataclass(frozen=True)
 class TrainingDefaults:
     episodes: int = 2000
-    num_envs: int = 1
+    num_envs: int = 8
     sim_speed_factor: float = 2.0
     gazebo_gui: bool = True
-    ros_domain_base: int = 50
-    gazebo_port_base: int = 11400
-    worker_startup_timeout: float = 90.0
+    gazebo_startup_timeout: float = 240.0
+    training_points: Path | None = None
     max_steps: int = 600
     rollout_steps: int = 1024
     ppo_epochs: int = 8
@@ -73,8 +73,6 @@ class TrainingDefaults:
     backend: str = "gazebo"
     map_mode: str = "random"
     map_index: int | None = None
-    # Train on one Gazebo map for a block of global episodes before rotating.
-    episodes_per_map: int = 20
     goal: tuple[float, float] | None = None
     goal_frame: str = "odom"
     goal_tolerance: float = 0.25
@@ -168,7 +166,6 @@ def _validate_args(args: argparse.Namespace) -> None:
         "ppo_epochs": args.ppo_epochs,
         "minibatch_size": args.minibatch_size,
         "eval_max_steps": args.eval_max_steps,
-        "episodes_per_map": args.episodes_per_map,
     }
     for name, value in positive_ints.items():
         if value <= 0:
@@ -200,16 +197,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("TrainingDefaults.map_index cannot be negative")
     if args.backend == "hardware" and args.num_envs != 1:
         raise ValueError("hardware training requires num_envs=1")
-    if not 0 <= args.ros_domain_base <= 232:
-        raise ValueError("ros_domain_base must be in [0, 232]")
-    if args.ros_domain_base + args.num_envs - 1 > 232:
-        raise ValueError("parallel ROS domain IDs cannot exceed 232")
-    if not 1024 <= args.gazebo_port_base <= 65535:
-        raise ValueError("gazebo_port_base must be in [1024, 65535]")
-    if args.gazebo_port_base + args.num_envs - 1 > 65535:
-        raise ValueError("parallel Gazebo ports cannot exceed 65535")
-    if args.worker_startup_timeout <= 0.0:
-        raise ValueError("worker_startup_timeout must be positive")
+    if args.gazebo_startup_timeout <= 0.0:
+        raise ValueError("gazebo_startup_timeout must be positive")
     validate_sim_speed_factor(args.sim_speed_factor)
     numeric_values = {
         "lr": args.lr,
@@ -230,7 +219,7 @@ def _validate_args(args: argparse.Namespace) -> None:
         "max-vy": args.max_vy,
         "max-wz": args.max_wz,
         "max-action-delta": args.max_action_delta,
-        "worker-startup-timeout": args.worker_startup_timeout,
+        "gazebo-startup-timeout": args.gazebo_startup_timeout,
     }
     for name, value in numeric_values.items():
         if not math.isfinite(float(value)):
@@ -249,7 +238,7 @@ def _validate_args(args: argparse.Namespace) -> None:
         "max-vy",
         "max-wz",
         "max-action-delta",
-        "worker-startup-timeout",
+        "gazebo-startup-timeout",
         "reward-scale",
     )
     if any(numeric_values[name] <= 0.0 for name in positive_names):
@@ -310,7 +299,8 @@ def entropy_coefficient_for_episode(
     decay_fraction: float,
     episode: int,
 ) -> float:
-    """Return the deterministic three-phase entropy coefficient for PPO.
+    """
+    Return the deterministic three-phase entropy coefficient for PPO.
 
     The phase durations are percentages of the configured total episode count,
     not fixed episode counts, wall-clock time, or noisy evaluation results.
@@ -444,6 +434,22 @@ def environment_kwargs(
         "reward_config": reward_config,
         "allow_hardware_training": args.backend == "hardware",
     }
+
+
+def _package_asset_path(relative_path: str) -> Path:
+    """Resolve one source-tree or installed package data file."""
+    source_path = Path(__file__).resolve().parents[2] / relative_path
+    if source_path.exists():
+        return source_path.resolve()
+    try:
+        from ament_index_python.packages import get_package_share_directory
+
+        installed = Path(get_package_share_directory("martha")) / relative_path
+    except Exception as exc:
+        raise FileNotFoundError(f"could not locate package asset {relative_path}") from exc
+    if not installed.exists():
+        raise FileNotFoundError(f"package asset does not exist: {installed}")
+    return installed.resolve()
 
 
 def build_agent(
@@ -697,7 +703,7 @@ def training_world_index(
     world_count: int,
     episode: int,
 ) -> int | None:
-    """Choose the reproducible Gazebo map for one global training episode."""
+    """Choose the reproducible shared map for an episode's group round."""
     if args.backend == "hardware":
         return None
     if args.map_index is not None:
@@ -707,11 +713,8 @@ def training_world_index(
     if episode <= 0:
         raise ValueError("training episode must be positive")
 
-    block_index = (episode - 1) // args.episodes_per_map
-    cycle_index, map_position = divmod(block_index, world_count)
-    cycle_seed = episode_seed(args.seed, 2, cycle_index)
-    map_cycle = np.random.default_rng(cycle_seed).permutation(world_count)
-    return int(map_cycle[map_position])
+    round_index = (episode - 1) // args.num_envs
+    return shuffled_world_index(args.seed, round_index, world_count)
 
 
 def training_reset_options(
@@ -724,47 +727,6 @@ def training_reset_options(
         args,
         training_world_index(args, world_count, episode),
     )
-
-
-def _parallel_reset_batch(
-    environments: list[Any],
-    requests: list[tuple[int, int, dict[str, Any]]],
-) -> dict[int, tuple[np.ndarray, dict[str, Any]]]:
-    """Reset isolated workers concurrently and drain every sent request."""
-    sent_indices: list[int] = []
-    send_error: tuple[int, Exception] | None = None
-    for environment_index, seed, options in requests:
-        try:
-            environments[environment_index].send_reset(
-                seed=seed,
-                options=options,
-            )
-            sent_indices.append(environment_index)
-        except Exception as exc:
-            send_error = (environment_index, exc)
-            break
-
-    results: dict[int, tuple[np.ndarray, dict[str, Any]]] = {}
-    receive_errors: list[tuple[int, Exception]] = []
-    for environment_index in sent_indices:
-        try:
-            results[environment_index] = environments[
-                environment_index
-            ].receive_reset()
-        except Exception as exc:
-            receive_errors.append((environment_index, exc))
-
-    if send_error is not None:
-        environment_index, error = send_error
-        raise RuntimeError(
-            f"could not send reset to Gazebo worker {environment_index}"
-        ) from error
-    if receive_errors:
-        indices = ", ".join(str(index) for index, _ in receive_errors)
-        raise RuntimeError(
-            f"Gazebo reset failed in worker(s): {indices}"
-        ) from receive_errors[0][1]
-    return results
 
 
 def _parallel_episode_state(
@@ -783,28 +745,6 @@ def _parallel_episode_state(
         "reward_components": _empty_reward_components(),
         "length": 0,
     }
-
-
-def _parallel_replacement_requests(
-    args: argparse.Namespace,
-    environment_indices: Iterable[int],
-    next_episode: int,
-    world_count: int,
-) -> tuple[list[tuple[int, int, dict[str, Any]]], int]:
-    """Allocate at most the remaining configured parallel episodes."""
-    requests = []
-    for environment_index in environment_indices:
-        if next_episode > args.episodes:
-            break
-        requests.append(
-            (
-                environment_index,
-                episode_seed(args.seed, 0, next_episode),
-                training_reset_options(args, world_count, next_episode),
-            )
-        )
-        next_episode += 1
-    return requests, next_episode
 
 
 def _confirm_hardware_reset(
@@ -1231,44 +1171,148 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
     return network, ppo
 
 
+def evaluate_shared_policy(
+    network: ActorCritic,
+    group: Any,
+    args: argparse.Namespace,
+    evaluation_round: int,
+) -> dict[str, float]:
+    """Evaluate one robot while the rest remain outside every arena."""
+    rewards: list[float] = []
+    successes: list[float] = []
+    collisions: list[float] = []
+    spl_values: list[float] = []
+    was_training = network.training
+    network.eval()
+    try:
+        with torch.no_grad():
+            worlds = _evaluation_worlds(group.reference_env, args)
+            for world_index in worlds:
+                assert world_index is not None
+                for eval_episode in range(args.eval_episodes):
+                    seed = episode_seed(
+                        args.seed,
+                        1,
+                        evaluation_round,
+                        world_index,
+                        eval_episode,
+                    )
+                    observation, reset_info = group.reset_single(
+                        robot_index=0,
+                        world_index=world_index,
+                        seed=seed,
+                    )
+                    shortest, previous_position, path_length = (
+                        episode_path_state(reset_info)
+                    )
+                    total_reward = 0.0
+                    info: dict[str, Any] = {}
+                    terminated = truncated = False
+                    for _ in range(args.eval_max_steps):
+                        action, _, _ = network.get_action(
+                            observation,
+                            deterministic=True,
+                        )
+                        transition = group.step_batch(
+                            {0: action.numpy().astype(np.float32)}
+                        )[0]
+                        observation, reward, terminated, truncated, info = transition
+                        total_reward += float(reward)
+                        previous_position, path_length = advance_path(
+                            previous_position,
+                            path_length,
+                            info,
+                        )
+                        if terminated or truncated:
+                            break
+                    if not (terminated or truncated):
+                        group.park(0)
+                    success = bool(info.get("reached_goal", False))
+                    rewards.append(total_reward)
+                    successes.append(float(success))
+                    collisions.append(float(bool(info.get("collision", False))))
+                    spl_values.append(
+                        calculate_spl(success, shortest, path_length)
+                    )
+    finally:
+        group.park_all()
+        network.train(was_training)
+    finite_spl = [value for value in spl_values if math.isfinite(value)]
+    return {
+        "eval_mean_reward": float(np.mean(rewards)),
+        "eval_success_rate": float(np.mean(successes)),
+        "eval_collision_rate": float(np.mean(collisions)),
+        "eval_mean_spl": float(np.mean(finite_spl)) if finite_spl else math.nan,
+    }
+
+
+def _shared_metric_row(
+    episode: int,
+    state: dict[str, Any],
+    update_stats: dict[str, float],
+    eval_stats: dict[str, float],
+    best_eval_metrics: dict[str, float],
+) -> dict[str, Any]:
+    info = state["info"]
+    success = bool(info.get("reached_goal", False))
+    return {
+        "episode": episode,
+        "episode_reward": state["reward"],
+        "episode_scaled_reward": state["scaled_reward"],
+        **state["reward_components"],
+        "episode_length": state["length"],
+        "terminated": int(state["terminated"]),
+        "truncated": int(state["truncated"]),
+        "reached_goal": int(success),
+        "collision": int(bool(info.get("collision", False))),
+        "out_of_bounds": int(bool(info.get("out_of_bounds", False))),
+        "spl": calculate_spl(
+            success,
+            state["shortest"],
+            state["path_length"],
+        ),
+        **update_stats,
+        **eval_stats,
+        "best_eval_success_rate": best_eval_metrics["eval_success_rate"],
+        "best_eval_collision_rate": best_eval_metrics["eval_collision_rate"],
+        "best_eval_mean_spl": best_eval_metrics["eval_mean_spl"],
+        "best_eval_mean_reward": best_eval_metrics["eval_mean_reward"],
+    }
+
+
 def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
-    """Train with one or more isolated, trainer-managed Gazebo workers."""
-    from .parallel_env import ParallelGazeboEnvironments
+    """Train a synchronized Martha fleet in one managed Gazebo process."""
+    from .shared_gazebo import SharedGazeboEnvironments
 
     _validate_args(args)
     if args.backend != "gazebo":
-        raise ValueError("parallel training requires backend='gazebo'")
-    if args.num_envs > 4:
-        print(
-            "WARNING: more than four Gazebo workers can exhaust system RAM; "
-            "monitor memory and swap.",
-            flush=True,
-        )
-
+        raise ValueError("shared Gazebo training requires backend='gazebo'")
     set_seed(args.seed)
     device = choose_device(args.device)
     resume_checkpoint = (
-        None
-        if args.resume is None
-        else load_checkpoint_file(args.resume, device)
+        None if args.resume is None else load_checkpoint_file(args.resume, device)
     )
     _warn_legacy_reward_config(resume_checkpoint)
     if resume_checkpoint is not None:
         _validate_resume_reward_scale(args, resume_checkpoint)
     run_dir = make_run_dir(args)
     metrics_path, last_model_path, best_model_path = _checkpoint_paths(run_dir)
-    group = ParallelGazeboEnvironments(
+    points_path = (
+        _package_asset_path("config/training_points.yaml")
+        if args.training_points is None
+        else args.training_points.expanduser().resolve()
+    )
+    group = SharedGazeboEnvironments(
         count=args.num_envs,
-        ros_domain_base=args.ros_domain_base,
-        gazebo_port_base=args.gazebo_port_base,
         sim_speed_factor=args.sim_speed_factor,
         show_gui=args.gazebo_gui,
-        startup_timeout=args.worker_startup_timeout,
+        startup_timeout=args.gazebo_startup_timeout,
         run_directory=run_dir,
+        worlds_directory=_package_asset_path("worlds"),
+        points_path=points_path,
         environment_kwargs=environment_kwargs(args, resume_checkpoint),
     )
-    environments = group.environments
-    reference_env = environments[0]
+    reference_env = group.reference_env
     try:
         network, ppo = build_agent(args, device)
         start_episode = 1
@@ -1290,241 +1334,174 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
             )
 
         print(f"Device: {device}")
-        print("Backend: gazebo")
-        print(f"Managed Gazebo environments: {args.num_envs}")
-        print(
-            "Visible Gazebo worker: "
-            + ("0" if args.gazebo_gui else "none")
-        )
+        print("Backend: shared Gazebo")
+        print(f"Martha robots: {args.num_envs}")
+        print("Gazebo servers: 1")
         print(f"Run directory: {run_dir}")
+        print(f"Training points: {points_path}")
         print(f"Observation shape: {reference_env.observation_space.shape}")
         print(f"Action shape: {reference_env.action_space.shape}")
-        print(f"PPO reward scale: {args.reward_scale}")
 
-        buffers = [RolloutBuffer() for _ in environments]
-        active: dict[int, dict[str, Any]] = {}
-        seed_cursor = start_episode
-        initial_count = min(
-            len(environments),
-            args.episodes - start_episode + 1,
-        )
-        initial_requests = []
-        for index in range(initial_count):
-            seed = episode_seed(args.seed, 0, seed_cursor)
-            seed_cursor += 1
-            initial_requests.append(
-                (
-                    index,
-                    seed,
-                    training_reset_options(
-                        args,
-                        len(reference_env.predefined_maps),
-                        seed_cursor - 1,
-                    ),
-                )
-            )
-        initial_results = _parallel_reset_batch(
-            environments,
-            initial_requests,
-        )
-        for index, (observation, reset_info) in initial_results.items():
-            active[index] = _parallel_episode_state(
-                observation,
-                reset_info,
-            )
-
+        buffers = [RolloutBuffer() for _ in range(args.num_envs)]
         last_update_stats = dict(_EMPTY_UPDATE_STATS)
         completed_episode = start_episode - 1
-        while completed_episode < args.episodes and active:
-            indices = sorted(active)
-            observations = np.stack(
-                [active[index]["observation"] for index in indices]
+        next_evaluation = (
+            math.inf
+            if args.eval_every == 0
+            else (completed_episode // args.eval_every + 1) * args.eval_every
+        )
+        while completed_episode < args.episodes:
+            offset = completed_episode % args.num_envs
+            capacity = args.num_envs - offset if offset else args.num_envs
+            round_count = min(capacity, args.episodes - completed_episode)
+            episode_numbers = list(
+                range(completed_episode + 1, completed_episode + round_count + 1)
             )
-            actions, logprobs, values = network.get_actions(
-                observations,
-                deterministic=False,
+            world_index = training_world_index(
+                args,
+                len(reference_env.predefined_maps),
+                episode_numbers[0],
             )
-            action_values = actions.numpy().astype(np.float32)
-            for batch_index, environment_index in enumerate(indices):
-                environments[environment_index].send_step(
-                    action_values[batch_index]
-                )
+            assert world_index is not None
+            seeds = [episode_seed(args.seed, 0, episode) for episode in episode_numbers]
+            reset_results = group.reset_round(
+                world_index=world_index,
+                seeds=seeds,
+            )
+            active = {
+                index: _parallel_episode_state(*reset_results[index])
+                for index in range(round_count)
+            }
+            finished: dict[int, dict[str, Any]] = {}
 
-            transitions = []
-            for environment_index in indices:
-                transitions.append(
-                    environments[environment_index].receive_step()
+            while active:
+                indices = sorted(active)
+                observations = np.stack(
+                    [active[index]["observation"] for index in indices]
                 )
-            next_observations = np.stack(
-                [transition[0] for transition in transitions]
-            )
-            next_values = network.get_value(next_observations).numpy().reshape(-1)
-            ended = []
-            for batch_index, environment_index in enumerate(indices):
-                state = active[environment_index]
-                (
-                    next_observation,
-                    reward,
-                    terminated,
-                    truncated,
-                    info,
-                ) = transitions[batch_index]
-                episode_end = bool(terminated or truncated)
-                buffers[environment_index].store(
-                    state=state["observation"],
-                    action=action_values[batch_index],
-                    logprob=logprobs[batch_index],
-                    reward=scale_reward_for_ppo(reward, args.reward_scale),
-                    value=values[batch_index],
-                    next_value=(
-                        0.0 if terminated else next_values[batch_index]
-                    ),
-                    terminated=terminated,
-                    episode_end=episode_end,
+                actions, logprobs, values = network.get_actions(
+                    observations,
+                    deterministic=False,
                 )
-                state["reward"] += float(reward)
-                state["scaled_reward"] += scale_reward_for_ppo(
-                    reward,
-                    args.reward_scale,
+                action_values = actions.numpy().astype(np.float32)
+                transitions_by_index = group.step_batch({
+                    index: action_values[batch_index]
+                    for batch_index, index in enumerate(indices)
+                })
+                transitions = [transitions_by_index[index] for index in indices]
+                next_observations = np.stack(
+                    [transition[0] for transition in transitions]
                 )
-                _accumulate_reward_components(
-                    state["reward_components"],
-                    info,
-                )
-                state["length"] += 1
-                state["previous_position"], state["path_length"] = (
-                    advance_path(
+                next_values = network.get_value(next_observations).numpy().reshape(-1)
+                for batch_index, environment_index in enumerate(indices):
+                    state = active[environment_index]
+                    next_observation, reward, terminated, truncated, info = (
+                        transitions[batch_index]
+                    )
+                    episode_end = bool(terminated or truncated)
+                    buffers[environment_index].store(
+                        state=state["observation"],
+                        action=action_values[batch_index],
+                        logprob=logprobs[batch_index],
+                        reward=scale_reward_for_ppo(reward, args.reward_scale),
+                        value=values[batch_index],
+                        next_value=(0.0 if terminated else next_values[batch_index]),
+                        terminated=terminated,
+                        episode_end=episode_end,
+                    )
+                    state["reward"] += float(reward)
+                    state["scaled_reward"] += scale_reward_for_ppo(
+                        reward,
+                        args.reward_scale,
+                    )
+                    _accumulate_reward_components(state["reward_components"], info)
+                    state["length"] += 1
+                    state["previous_position"], state["path_length"] = advance_path(
                         state["previous_position"],
                         state["path_length"],
                         info,
                     )
-                )
-                state["observation"] = next_observation
-                if episode_end:
-                    state["terminated"] = bool(terminated)
-                    state["truncated"] = bool(truncated)
-                    state["info"] = info
-                    ended.append(environment_index)
-
-            if sum(len(buffer) for buffer in buffers) >= args.rollout_steps:
-                apply_entropy_schedule(ppo, args, completed_episode + 1)
-                last_update_stats = ppo.train_buffers(buffers)
-                for name, stat in last_update_stats.items():
-                    assert_finite(name, stat)
-
-            for environment_index in ended:
-                state = active.pop(environment_index)
-                info = state["info"]
-                completed_episode += 1
-                success = bool(info.get("reached_goal", False))
-                collision = bool(info.get("collision", False))
-                episode_spl = calculate_spl(
-                    success,
-                    state["shortest"],
-                    state["path_length"],
-                )
-                eval_stats = {
-                    "eval_mean_reward": math.nan,
-                    "eval_success_rate": math.nan,
-                    "eval_collision_rate": math.nan,
-                    "eval_mean_spl": math.nan,
-                }
-                should_evaluate = (
-                    args.eval_every > 0
-                    and completed_episode % args.eval_every == 0
-                )
-                if should_evaluate:
-                    eval_stats = evaluate_policy(
-                        network,
-                        environments[environment_index],
-                        args,
-                        evaluation_round=completed_episode,
-                    )
-                    if evaluation_score(eval_stats) > evaluation_score(
-                        best_eval_metrics
-                    ):
-                        best_eval_metrics = dict(eval_stats)
-                        save_checkpoint(
-                            best_model_path,
-                            network,
-                            ppo,
-                            reference_env,
-                            args,
-                            completed_episode,
-                            best_eval_metrics,
+                    state["observation"] = next_observation
+                    if episode_end:
+                        state.update(
+                            terminated=bool(terminated),
+                            truncated=bool(truncated),
+                            info=info,
                         )
+                        finished[environment_index] = active.pop(environment_index)
 
-                save_checkpoint(
-                    last_model_path,
+                if sum(len(buffer) for buffer in buffers) >= args.rollout_steps:
+                    apply_entropy_schedule(
+                        ppo,
+                        args,
+                        completed_episode + len(finished),
+                    )
+                    last_update_stats = ppo.train_buffers(buffers)
+                    for name, stat in last_update_stats.items():
+                        assert_finite(name, stat)
+
+            completed_episode += round_count
+            empty_eval = {
+                "eval_mean_reward": math.nan,
+                "eval_success_rate": math.nan,
+                "eval_collision_rate": math.nan,
+                "eval_mean_spl": math.nan,
+            }
+            eval_stats = dict(empty_eval)
+            if completed_episode >= next_evaluation:
+                eval_stats = evaluate_shared_policy(
                     network,
-                    ppo,
-                    reference_env,
+                    group,
                     args,
-                    completed_episode,
+                    evaluation_round=completed_episode,
+                )
+                while next_evaluation <= completed_episode:
+                    next_evaluation += args.eval_every
+                if evaluation_score(eval_stats) > evaluation_score(
+                    best_eval_metrics
+                ):
+                    best_eval_metrics = dict(eval_stats)
+                    save_checkpoint(
+                        best_model_path,
+                        network,
+                        ppo,
+                        reference_env,
+                        args,
+                        completed_episode,
+                        best_eval_metrics,
+                    )
+
+            for index, episode in enumerate(episode_numbers):
+                state = finished[index]
+                row_eval = eval_stats if index == round_count - 1 else empty_eval
+                row = _shared_metric_row(
+                    episode,
+                    state,
+                    last_update_stats,
+                    row_eval,
                     best_eval_metrics,
                 )
-                write_metric(
-                    metrics_path,
-                    {
-                        "episode": completed_episode,
-                        "episode_reward": state["reward"],
-                        "episode_scaled_reward": state["scaled_reward"],
-                        **state["reward_components"],
-                        "episode_length": state["length"],
-                        "terminated": int(state["terminated"]),
-                        "truncated": int(state["truncated"]),
-                        "reached_goal": int(success),
-                        "collision": int(collision),
-                        "out_of_bounds": int(
-                            bool(info.get("out_of_bounds", False))
-                        ),
-                        "spl": episode_spl,
-                        **last_update_stats,
-                        **eval_stats,
-                        "best_eval_success_rate": best_eval_metrics[
-                            "eval_success_rate"
-                        ],
-                        "best_eval_collision_rate": best_eval_metrics[
-                            "eval_collision_rate"
-                        ],
-                        "best_eval_mean_spl": best_eval_metrics[
-                            "eval_mean_spl"
-                        ],
-                        "best_eval_mean_reward": best_eval_metrics[
-                            "eval_mean_reward"
-                        ],
-                    },
-                )
+                write_metric(metrics_path, row)
                 print(
-                    f"episode={completed_episode:5d}"
-                    f" | env={environment_index}"
+                    f"episode={episode:5d}"
+                    f" | robot={index}"
+                    f" | map={reference_env.predefined_maps[world_index].world_name}"
                     f" | reward={state['reward']:8.2f}"
                     f" | len={state['length']:3d}"
-                    f" | success={int(success)}"
-                    f" | collision={int(collision)}"
-                    f" | SPL={episode_spl:.3f}",
+                    f" | success={row['reached_goal']}"
+                    f" | collision={row['collision']}"
+                    f" | SPL={row['spl']:.3f}",
                     flush=True,
                 )
-
-            # ``seed_cursor`` tracks episodes already launched.  Counting only
-            # completed episodes would oversubscribe the final batch because
-            # other workers can still have active episodes.
-            reset_requests, seed_cursor = _parallel_replacement_requests(
+            save_checkpoint(
+                last_model_path,
+                network,
+                ppo,
+                reference_env,
                 args,
-                ended,
-                seed_cursor,
-                len(reference_env.predefined_maps),
+                completed_episode,
+                best_eval_metrics,
             )
-            reset_results = _parallel_reset_batch(
-                environments,
-                reset_requests,
-            )
-            for environment_index, result in reset_results.items():
-                observation, reset_info = result
-                active[environment_index] = _parallel_episode_state(
-                    observation,
-                    reset_info,
-                )
 
         if sum(len(buffer) for buffer in buffers) > 0:
             apply_entropy_schedule(ppo, args, completed_episode)
@@ -1553,7 +1530,7 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
     finally:
         group.close()
 
-    print("Gazebo training finished.")
+    print("Shared Gazebo training finished.")
     print(f"Metrics: {metrics_path}")
     print(f"Last model: {last_model_path}")
     print(f"Best model: {best_model_path}")

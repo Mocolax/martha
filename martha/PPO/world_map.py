@@ -14,14 +14,21 @@ from dataclasses import dataclass
 import heapq
 import math
 from pathlib import Path
-import re
-from typing import Iterable
+from typing import Iterable, Protocol
 import xml.etree.ElementTree as ET
 
 import numpy as np
 
 
-BOUNDARY_NAMES = {"wall_back", "wall_front", "wall_left", "wall_right"}
+TRAINING_WORLD_NAMES = (
+    "four_rooms",
+    "hall",
+    "multi",
+    "roblab",
+    "room",
+    "tube",
+)
+LOCAL_ARENA_BOUNDS = (-10.0, 10.0, -10.0, 10.0)
 
 
 def _pose_2d(text: str | None) -> tuple[float, float, float]:
@@ -83,6 +90,40 @@ class BoxObstacle:
 
 
 @dataclass(frozen=True)
+class CircleObstacle:
+    """A cylindrical collision projected onto the world XY plane."""
+
+    name: str
+    x: float
+    y: float
+    radius: float
+
+    @property
+    def projected_half_x(self) -> float:
+        return self.radius
+
+    @property
+    def projected_half_y(self) -> float:
+        return self.radius
+
+    def contains(self, x: np.ndarray, y: np.ndarray, margin: float) -> np.ndarray:
+        """Return a mask for points inside this circle inflated by ``margin``."""
+        radius = self.radius + margin
+        return (x - self.x) ** 2 + (y - self.y) ** 2 <= radius**2
+
+
+class Obstacle(Protocol):
+    """Geometry contract used to rasterize supported SDF collisions."""
+
+    name: str
+    x: float
+    y: float
+
+    def contains(self, x: np.ndarray, y: np.ndarray, margin: float) -> np.ndarray:
+        """Return an occupancy mask."""
+
+
+@dataclass(frozen=True)
 class EpisodeSample:
     start_x: float
     start_y: float
@@ -100,7 +141,7 @@ class WorldMap:
         path: Path,
         world_name: str,
         bounds: tuple[float, float, float, float],
-        obstacles: Iterable[BoxObstacle],
+        obstacles: Iterable[Obstacle],
         model_xml: dict[str, str],
         resolution: float = 0.10,
         robot_clearance: float = 0.35,
@@ -143,8 +184,6 @@ class WorldMap:
         )
         occupied = np.zeros(grid_x.shape, dtype=bool)
         for obstacle in self.obstacles:
-            if obstacle.name in BOUNDARY_NAMES:
-                continue
             occupied |= obstacle.contains(
                 grid_x,
                 grid_y,
@@ -168,6 +207,7 @@ class WorldMap:
         path: str | Path,
         resolution: float = 0.10,
         robot_clearance: float = 0.35,
+        bounds: tuple[float, float, float, float] = LOCAL_ARENA_BOUNDS,
     ) -> "WorldMap":
         path = Path(path).resolve()
         root = ET.parse(path).getroot()
@@ -175,7 +215,7 @@ class WorldMap:
         if world is None:
             raise ValueError(f"{path} does not contain an SDF world")
 
-        obstacles: list[BoxObstacle] = []
+        obstacles: list[Obstacle] = []
         model_xml: dict[str, str] = {}
         for model in world.findall("model"):
             model_name = model.get("name", "")
@@ -189,42 +229,41 @@ class WorldMap:
                     _pose_2d(link.findtext("pose")),
                 )
                 for collision_index, collision in enumerate(link.findall("collision")):
+                    collision_name = collision.get(
+                        "name",
+                        f"collision_{link_index}_{collision_index}",
+                    )
                     size_element = collision.find("geometry/box/size")
-                    if size_element is None or not size_element.text:
-                        continue
-                    sizes = [float(value) for value in size_element.text.split()]
-                    if len(sizes) < 2:
-                        continue
                     collision_pose = _compose_pose(
                         link_pose,
                         _pose_2d(collision.findtext("pose")),
                     )
-                    suffix = "" if link_index == collision_index == 0 else (
-                        f"_{link_index}_{collision_index}"
-                    )
-                    obstacles.append(
-                        BoxObstacle(
-                            name=model_name + suffix,
-                            x=collision_pose[0],
-                            y=collision_pose[1],
-                            size_x=sizes[0],
-                            size_y=sizes[1],
-                            yaw=collision_pose[2],
+                    obstacle_name = f"{model_name}/{collision_name}"
+                    if size_element is not None and size_element.text:
+                        sizes = [float(value) for value in size_element.text.split()]
+                        if len(sizes) < 2:
+                            continue
+                        obstacles.append(
+                            BoxObstacle(
+                                name=obstacle_name,
+                                x=collision_pose[0],
+                                y=collision_pose[1],
+                                size_x=sizes[0],
+                                size_y=sizes[1],
+                                yaw=collision_pose[2],
+                            )
                         )
-                    )
-
-        by_name = {obstacle.name: obstacle for obstacle in obstacles}
-        missing = BOUNDARY_NAMES - by_name.keys()
-        if missing:
-            raise ValueError(
-                f"{path.name} is missing arena boundaries: {sorted(missing)}"
-            )
-        bounds = (
-            by_name["wall_back"].x + by_name["wall_back"].projected_half_x,
-            by_name["wall_front"].x - by_name["wall_front"].projected_half_x,
-            by_name["wall_right"].y + by_name["wall_right"].projected_half_y,
-            by_name["wall_left"].y - by_name["wall_left"].projected_half_y,
-        )
+                        continue
+                    radius_element = collision.find("geometry/cylinder/radius")
+                    if radius_element is not None and radius_element.text:
+                        obstacles.append(
+                            CircleObstacle(
+                                name=obstacle_name,
+                                x=collision_pose[0],
+                                y=collision_pose[1],
+                                radius=float(radius_element.text),
+                            )
+                        )
         return cls(
             path=path,
             world_name=world.get("name", path.stem),
@@ -233,6 +272,46 @@ class WorldMap:
             model_xml=model_xml,
             resolution=resolution,
             robot_clearance=robot_clearance,
+        )
+
+    def translated(self, offset_x: float, offset_y: float) -> "WorldMap":
+        """Return the same occupancy geometry translated into a shared world."""
+        translated_obstacles: list[Obstacle] = []
+        for obstacle in self.obstacles:
+            if isinstance(obstacle, BoxObstacle):
+                translated_obstacles.append(
+                    BoxObstacle(
+                        name=obstacle.name,
+                        x=obstacle.x + offset_x,
+                        y=obstacle.y + offset_y,
+                        size_x=obstacle.size_x,
+                        size_y=obstacle.size_y,
+                        yaw=obstacle.yaw,
+                    )
+                )
+            else:
+                translated_obstacles.append(
+                    CircleObstacle(
+                        name=obstacle.name,
+                        x=obstacle.x + offset_x,
+                        y=obstacle.y + offset_y,
+                        radius=obstacle.radius,
+                    )
+                )
+        min_x, max_x, min_y, max_y = self.bounds
+        return WorldMap(
+            path=self.path,
+            world_name=self.world_name,
+            bounds=(
+                min_x + offset_x,
+                max_x + offset_x,
+                min_y + offset_y,
+                max_y + offset_y,
+            ),
+            obstacles=translated_obstacles,
+            model_xml=self.model_xml,
+            resolution=self.resolution,
+            robot_clearance=self.robot_clearance,
         )
 
     @property
@@ -472,12 +551,10 @@ class WorldMap:
 
 
 def discover_worlds(worlds_directory: str | Path) -> tuple[Path, ...]:
-    """Return ``mundo_N.world`` files in numeric order."""
+    """Return the six canonical training worlds in stable semantic order."""
     worlds_directory = Path(worlds_directory)
-
-    def world_number(path: Path) -> int:
-        match = re.fullmatch(r"mundo_(\d+)\.world", path.name)
-        return int(match.group(1)) if match else 10**9
-
-    paths = sorted(worlds_directory.glob("mundo_*.world"), key=world_number)
-    return tuple(path.resolve() for path in paths if world_number(path) < 10**9)
+    return tuple(
+        path.resolve()
+        for name in TRAINING_WORLD_NAMES
+        if (path := worlds_directory / f"{name}.world").is_file()
+    )

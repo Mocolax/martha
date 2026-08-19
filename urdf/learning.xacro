@@ -2,6 +2,11 @@
 <!-- ros2 run xacro xacro urdf/learning.xacro -o /tmp/learning.urdf -->
     
 <robot name="Martha" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <xacro:arg name="robot_namespace" default="" />
+    <xacro:arg name="frame_prefix" default="" />
+    <xacro:property name="robot_namespace" value="$(arg robot_namespace)" />
+    <xacro:property name="frame_prefix" value="$(arg frame_prefix)" />
     
     <!--····························································· COLORS ·····························································-->
 
@@ -76,6 +81,15 @@
         <origin xyz="${base_center_x/2 + base_front_x/2} 0 ${height_0}"/>
         <geometry>
         <box size="${base_front_x} ${base_narrow_y} ${base_z}"/>
+        </geometry>
+    </collision>
+
+    <!-- Contact-only footprint kept above the floor so normal wheel support
+         never becomes a collision terminal. -->
+    <collision name="contact_shell_collision">
+        <origin xyz="0 0 0.125"/>
+        <geometry>
+            <box size="0.558 0.410 0.200"/>
         </geometry>
     </collision>
 
@@ -257,7 +271,7 @@
     <xacro:mecanum_wheel name="rear_right" x="${-wheel_pos_x}" y="${-wheel_pos_y}" z="${wheel_pos_z}" pitch="${roller_angle}" />
 
 
-    <ros2_control name="GazeboSystem" type="system">
+    <ros2_control name="GazeboSystem_${robot_namespace}" type="system">
     <hardware>
         <plugin>gazebo_ros2_control/GazeboSystem</plugin>
     </hardware>
@@ -289,13 +303,32 @@
     </ros2_control>
 
   <gazebo>
-    <plugin name="gazebo_ros2_control" filename="libgazebo_ros2_control.so">
+    <plugin name="gazebo_ros2_control_${robot_namespace}" filename="libgazebo_ros2_control.so">
+      <ros>
+        <namespace>${robot_namespace}</namespace>
+      </ros>
       <parameters>$(find martha)/config/controllers.yaml</parameters>
     </plugin>
   </gazebo>
 
   <gazebo reference="base_link">
-  	<material>Gazebo/Red</material>
+    <material>Gazebo/Red</material>
+    <sensor name="contact_sensor" type="contact">
+      <always_on>true</always_on>
+      <update_rate>100</update_rate>
+      <contact>
+        <!-- gazebo's URDF-to-SDF conversion expands the named base_link
+             collision to this stable SDF collision name. -->
+        <collision>base_link_fixed_joint_lump__contact_shell_collision_collision_1</collision>
+      </contact>
+      <plugin name="gazebo_ros_bumper" filename="libgazebo_ros_bumper.so">
+        <ros>
+          <namespace>${robot_namespace}</namespace>
+          <remapping>bumper_states:=contacts</remapping>
+        </ros>
+        <frame_name>${frame_prefix}base_link</frame_name>
+      </plugin>
+    </sensor>
   </gazebo>
   <gazebo reference="front_left_wheel">
   	<material>Gazebo/Black</material>
@@ -359,9 +392,10 @@
       </imu>
       <plugin name="gazebo_ros_imu" filename="libgazebo_ros_imu_sensor.so">
         <ros>
-          <remapping>~/out:=/imu/data</remapping>
+          <namespace>${robot_namespace}</namespace>
+          <remapping>~/out:=imu/data</remapping>
         </ros>
-        <frame_name>imu_link</frame_name>
+        <frame_name>${frame_prefix}imu_link</frame_name>
         <initial_orientation_as_reference>false</initial_orientation_as_reference>
       </plugin>
     </sensor>
@@ -394,10 +428,11 @@
       </ray>
       <plugin name="gazebo_ros_lidar" filename="libgazebo_ros_ray_sensor.so">
         <ros>
-          <remapping>~/out:=/scan</remapping>
+          <namespace>${robot_namespace}</namespace>
+          <remapping>~/out:=scan</remapping>
         </ros>
         <output_type>sensor_msgs/LaserScan</output_type>
-        <frame_name>lidar</frame_name>
+        <frame_name>${frame_prefix}lidar</frame_name>
       </plugin>
     </sensor>
   </gazebo>

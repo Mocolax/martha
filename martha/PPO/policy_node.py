@@ -106,6 +106,7 @@ class PolicyNode(RosObservationNode):
             odometry_topic=POLICY_DEFAULTS["odometry_topic"],
             goal_topic=POLICY_DEFAULTS["goal_topic"],
             cmd_vel_topic=POLICY_DEFAULTS["cmd_vel_topic"],
+            contact_topic="",
             fault_topic=POLICY_DEFAULTS["fault_topic"],
             scan_range_max=POLICY_DEFAULTS["scan_range_max"],
             odom_frame=POLICY_DEFAULTS["odom_frame"],

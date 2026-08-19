@@ -22,8 +22,11 @@ def _load_yaml(relative_path):
 
 def _ros_parameters(relative_path, node_name):
     document = _load_yaml(relative_path)
-    assert node_name in document, f"{relative_path} is missing {node_name}"
-    parameters = document[node_name].get("ros__parameters")
+    node = document.get(node_name)
+    if node is None:
+        node = document.get(f"/**/{node_name}")
+    assert node is not None, f"{relative_path} is missing {node_name}"
+    parameters = node.get("ros__parameters")
     assert isinstance(parameters, dict)
     return parameters
 
@@ -288,7 +291,7 @@ def test_simulation_launch_has_the_rl_sensor_and_odometry_pipeline():
     tree = _parse_python("launch/simulation.launch.py")
     literals = _string_literals(tree)
 
-    assert {"gui", "world", "sim_speed_factor"} <= (
+    assert {"gui", "world", "sim_speed_factor", "robot_count"} <= (
         _declared_launch_arguments(tree)
     )
     assert {
@@ -301,6 +304,21 @@ def test_simulation_launch_has_the_rl_sensor_and_odometry_pipeline():
     assert "odom_tf_broadcaster" not in literals
     assert True in _literal_dict_values(tree, "use_sim_time")
     assert False not in _literal_dict_values(tree, "use_sim_time")
+
+
+def test_learning_urdf_declares_namespaced_contact_sensor():
+    xacro = _path("urdf/learning.xacro").read_text(encoding="utf-8")
+
+    assert 'name="contact_shell_collision"' in xacro
+    assert 'type="contact"' in xacro
+    assert "libgazebo_ros_bumper.so" in xacro
+    assert "bumper_states:=contacts" in xacro
+    assert (
+        "base_link_fixed_joint_lump__contact_shell_collision_collision_1"
+        in xacro
+    )
+    assert "<update_rate>100</update_rate>" in xacro
+    assert "${robot_namespace}" in xacro
 
 
 def test_bringup_launch_selects_backends_and_optional_mapping_tools():

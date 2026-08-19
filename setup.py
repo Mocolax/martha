@@ -19,7 +19,7 @@ setup(
         (os.path.join('share', package_name, 'rviz'), glob('rviz/*.rviz')),
         (os.path.join('share', package_name, 'maps'), glob('maps/*')),
     ],
-    install_requires=['setuptools', 'numpy'],
+    install_requires=['setuptools', 'numpy', 'PyYAML'],
     zip_safe=True,
     maintainer='mocolax',
     maintainer_email='nicolas58david@hotmail.com',

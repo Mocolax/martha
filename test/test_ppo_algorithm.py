@@ -34,11 +34,6 @@ from martha.PPO.observations import (  # noqa: E402
     OBSERVATION_HISTORY_SECONDS,
 )
 from martha.PPO.reward import RewardConfig  # noqa: E402
-from martha.PPO.parallel_env import (  # noqa: E402
-    ParallelWorkerConfig,
-    RemoteMarthaEnv,
-    _simulation_launch_command,
-)
 from martha.PPO.train import (  # noqa: E402
     DEFAULTS as TRAINING_DEFAULTS,
     METRIC_FIELDS,
@@ -46,8 +41,6 @@ from martha.PPO.train import (  # noqa: E402
     _evaluation_worlds,
     apply_entropy_schedule,
     entropy_coefficient_for_episode,
-    _parallel_replacement_requests,
-    _parallel_reset_batch,
     _validate_resume_reward_scale,
     parse_args,
     scale_reward_for_ppo,
@@ -73,25 +66,6 @@ def test_single_gazebo_environment_is_always_trainer_managed(monkeypatch):
     monkeypatch.setattr(train_module, "train_gazebo", lambda received: expected)
 
     assert train_module.train(args) is expected
-
-
-@pytest.mark.parametrize("gui", (False, True))
-def test_parallel_worker_launches_only_its_requested_gui(gui):
-    config = ParallelWorkerConfig(
-        index=0,
-        ros_domain_id=50,
-        gazebo_port=11400,
-        sim_speed_factor=4.0,
-        gui=gui,
-        startup_timeout=90.0,
-        log_path="worker.log",
-        environment_kwargs={},
-    )
-
-    command = _simulation_launch_command(config)
-
-    assert f"gui:={'true' if gui else 'false'}" in command
-    assert "sim_speed_factor:=4.0" in command
 
 
 def test_truncation_bootstraps_value_while_terminal_does_not():
@@ -295,15 +269,15 @@ def test_network_diagnostics_are_finite_and_bounded():
 
 def test_periodic_evaluation_uses_editable_training_defaults():
     args = parse_args([])
-    environment = SimpleNamespace(predefined_maps=tuple(range(9)))
+    environment = SimpleNamespace(predefined_maps=tuple(range(6)))
 
     assert args.eval_episodes == TRAINING_DEFAULTS.eval_episodes
     assert args.eval_max_steps == TRAINING_DEFAULTS.eval_max_steps
     assert args.reward_scale == pytest.approx(TRAINING_DEFAULTS.reward_scale)
-    assert _evaluation_worlds(environment, args) == [0, 4, 8]
+    assert _evaluation_worlds(environment, args) == [0, 2, 5]
 
     args.eval_map_count = 0
-    assert _evaluation_worlds(environment, args) == list(range(9))
+    assert _evaluation_worlds(environment, args) == list(range(6))
 
 
 def test_training_cli_only_exposes_resume():
@@ -385,32 +359,6 @@ def test_checkpoint_configuration_serializes_the_active_reward_config():
     assert config["reward_config"] == vars(reward_config)
 
 
-def test_remote_environment_exposes_the_worker_reward_config():
-    reward_config = RewardConfig(wiggle_window_steps=7)
-    environment = RemoteMarthaEnv(
-        connection=object(),
-        process=object(),
-        metadata={
-            "observation_low": np.full(OBSERVATION_SIZE, -1.0),
-            "observation_high": np.ones(OBSERVATION_SIZE),
-            "action_low": np.full(ACTION_SIZE, -1.0),
-            "action_high": np.ones(ACTION_SIZE),
-            "action_limits": {
-                "max_vx": 0.35,
-                "max_vy": 0.35,
-                "max_wz": 0.8,
-                "max_action_delta": 0.35,
-            },
-            "reward_config": vars(reward_config),
-            "policy_contract": {},
-            "max_goal_distance": 12.0,
-            "world_count": 9,
-        },
-    )
-
-    assert environment.reward_config == reward_config
-
-
 def test_reward_scaling_preserves_raw_reward_for_reporting():
     raw_reward = -120.5
 
@@ -472,104 +420,26 @@ def test_resume_requires_the_checkpoint_reward_scale():
         )
 
 
-class _FakeRemoteEnvironment:
-    def __init__(self, index, events, *, receive_error=None):
-        self.index = index
-        self.events = events
-        self.receive_error = receive_error
-
-    def send_reset(self, *, seed, options):
-        self.events.append(("send", self.index, seed, options))
-
-    def receive_reset(self):
-        self.events.append(("receive", self.index))
-        if self.receive_error is not None:
-            raise self.receive_error
-        return f"observation-{self.index}", {"worker": self.index}
-
-
-def test_parallel_reset_batch_sends_every_reset_before_receiving():
-    events = []
-    environments = [
-        _FakeRemoteEnvironment(index, events) for index in range(3)
-    ]
-    requests = [(index, 100 + index, {}) for index in range(3)]
-
-    results = _parallel_reset_batch(environments, requests)
-
-    assert [event[0] for event in events] == [
-        "send",
-        "send",
-        "send",
-        "receive",
-        "receive",
-        "receive",
-    ]
-    assert set(results) == {0, 1, 2}
-
-
-def test_parallel_reset_batch_drains_responses_after_worker_error():
-    events = []
-    environments = [
-        _FakeRemoteEnvironment(
-            0,
-            events,
-            receive_error=RuntimeError("reset failed"),
-        ),
-        _FakeRemoteEnvironment(1, events),
-    ]
-
-    with pytest.raises(RuntimeError, match="worker\\(s\\): 0"):
-        _parallel_reset_batch(
-            environments,
-            [(0, 100, {}), (1, 101, {})],
-        )
-
-    assert ("receive", 1) in events
-
-
-def test_parallel_replacements_do_not_oversubscribe_episode_limit():
-    args = SimpleNamespace(
-        backend="gazebo",
-        episodes=10,
-        seed=42,
-        map_index=None,
-        episodes_per_map=20,
-    )
-
-    requests, next_episode = _parallel_replacement_requests(
-        args,
-        [3, 4, 5, 6],
-        next_episode=9,
-        world_count=9,
-    )
-
-    assert [request[0] for request in requests] == [3, 4]
-    assert requests[0][1] != requests[1][1]
-    assert requests[0][2]["world_index"] == requests[1][2]["world_index"]
-    assert next_episode == 11
-
-
-def test_training_map_blocks_are_stable_and_cover_a_random_cycle_once():
+def test_training_rounds_cover_one_seeded_random_cycle_once():
     args = SimpleNamespace(
         backend="gazebo",
         map_index=None,
-        episodes_per_map=20,
+        num_envs=8,
         seed=42,
     )
-    world_count = 9
+    world_count = 6
     first_cycle = [
-        training_world_index(args, world_count, 1 + 20 * block)
+        training_world_index(args, world_count, 1 + 8 * block)
         for block in range(world_count)
     ]
 
     assert all(
         training_world_index(args, world_count, episode) == first_cycle[0]
-        for episode in range(1, 21)
+        for episode in range(1, 9)
     )
     assert all(
         training_world_index(args, world_count, episode) == first_cycle[1]
-        for episode in range(21, 41)
+        for episode in range(9, 17)
     )
     assert len(set(first_cycle)) == world_count
 
@@ -578,13 +448,13 @@ def test_training_map_blocks_are_seeded_and_resume_without_scheduler_state():
     common = {
         "backend": "gazebo",
         "map_index": None,
-        "episodes_per_map": 20,
+        "num_envs": 8,
     }
     first = SimpleNamespace(seed=42, **common)
     repeat = SimpleNamespace(seed=42, **common)
     different = SimpleNamespace(seed=43, **common)
-    world_count = 9
-    episodes = range(1, 181)
+    world_count = 6
+    episodes = range(1, 97)
 
     first_sequence = [
         training_world_index(first, world_count, episode)
@@ -598,9 +468,9 @@ def test_training_map_blocks_are_seeded_and_resume_without_scheduler_state():
         training_world_index(different, world_count, episode)
         for episode in episodes
     ]
-    assert first_sequence[94:] == [
+    assert first_sequence[37:] == [
         training_world_index(first, world_count, episode)
-        for episode in range(95, 181)
+        for episode in range(38, 97)
     ]
 
 
@@ -608,12 +478,12 @@ def test_training_map_index_override_disables_block_rotation():
     args = SimpleNamespace(
         backend="gazebo",
         map_index=4,
-        episodes_per_map=20,
+        num_envs=8,
         seed=42,
     )
 
-    assert training_world_index(args, 9, 1) == 4
-    assert training_world_index(args, 9, 200) == 4
+    assert training_world_index(args, 6, 1) == 4
+    assert training_world_index(args, 6, 200) == 4
 
 
 def test_tiny_ppo_update_is_finite_and_changes_parameters():

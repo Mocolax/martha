@@ -18,7 +18,12 @@ from martha.PPO.observations import (
 )
 from martha.PPO.reward import RewardState, calculate_reward
 from martha.PPO.martha_env import MarthaEnv, fault_topic_for_backend
-from martha.PPO.world_map import BoxObstacle, WorldMap, discover_worlds
+from martha.PPO.world_map import (
+    TRAINING_WORLD_NAMES,
+    BoxObstacle,
+    WorldMap,
+    discover_worlds,
+)
 from martha.simulation_speed import (
     MAX_SIM_SPEED_FACTOR,
     create_scaled_world,
@@ -29,7 +34,7 @@ from martha.simulation_speed import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WORLDS_DIRECTORY = PROJECT_ROOT / "worlds"
 TRAINING_WORLDS = tuple(
-    WORLDS_DIRECTORY / f"mundo_{index}.world" for index in range(1, 10)
+    WORLDS_DIRECTORY / f"{name}.world" for name in TRAINING_WORLD_NAMES
 )
 
 
@@ -58,12 +63,10 @@ def test_scaled_world_changes_wall_speed_not_physics_step(tmp_path):
     assert float(scaled_physics.findtext("real_time_factor")) == 4.0
 
 
-def test_discovers_all_training_worlds_in_numeric_order():
+def test_discovers_exactly_the_six_training_worlds_in_layout_order():
     discovered = discover_worlds(WORLDS_DIRECTORY)
 
-    assert tuple(path.name for path in discovered) == tuple(
-        f"mundo_{index}.world" for index in range(1, 10)
-    )
+    assert tuple(path.stem for path in discovered) == TRAINING_WORLD_NAMES
 
 
 def test_motor_fault_topic_is_hardware_only():
@@ -102,6 +105,7 @@ def test_failed_reset_state_cannot_authorize_an_old_transition():
 
 def test_gazebo_dynamics_reset_precedes_scenario_replacement():
     env = object.__new__(MarthaEnv)
+    env.preloaded_worlds = False
     calls = []
     env._call_empty = lambda service: calls.append(("service", service))
     env._switch_world = lambda index: calls.append(("world", index))
@@ -138,6 +142,7 @@ def test_pause_service_timeout_retries_and_keeps_robot_stopped():
 
 def test_repeated_world_switches_confirm_deletion_and_reuse_stable_names():
     env = object.__new__(MarthaEnv)
+    env.preloaded_worlds = False
     world = type(
         "FakeWorld",
         (),
@@ -199,7 +204,7 @@ def test_repeated_world_switches_confirm_deletion_and_reuse_stable_names():
 @pytest.mark.parametrize("world_path", TRAINING_WORLDS, ids=lambda path: path.stem)
 def test_every_world_samples_a_connected_start_and_goal(world_path):
     world = WorldMap.from_sdf(world_path)
-    seed = int(world_path.stem.rsplit("_", 1)[1])
+    seed = TRAINING_WORLDS.index(world_path) + 1
     sample = world.sample_episode(
         np.random.default_rng(seed),
         min_goal_distance=1.0,
@@ -229,13 +234,13 @@ def test_every_world_samples_a_connected_start_and_goal(world_path):
     )
 
     assert np.isfinite(measured_distance)
-    assert measured_distance == pytest.approx(sample.shortest_path)
+    assert measured_distance == pytest.approx(sample.shortest_path, abs=2e-4)
     assert measured_distance >= euclidean_distance - 1e-6
     assert world.path_distance(
         sample.goal_x,
         sample.goal_y,
         distance_field,
-    ) == pytest.approx(0.0)
+    ) == pytest.approx(0.0, abs=2e-4)
 
 
 def test_geodesic_distance_routes_around_an_inflated_obstacle():

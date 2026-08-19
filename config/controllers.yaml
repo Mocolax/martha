@@ -1,4 +1,4 @@
-controller_manager:
+/**/controller_manager:
   ros__parameters:
     update_rate: 100
 
@@ -8,7 +8,7 @@ controller_manager:
     mecanum_drive_controller:
       type: mecanum_drive_controller/MecanumDriveController
 
-mecanum_drive_controller:
+/**/mecanum_drive_controller:
   ros__parameters:
     reference_timeout: 0.5
     front_left_wheel_command_joint_name: base_front_left_wheel_joint

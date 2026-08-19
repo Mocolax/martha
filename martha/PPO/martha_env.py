@@ -81,7 +81,7 @@ try:
     )
     from rclpy.time import Time as RosTime
 
-    from gazebo_msgs.msg import EntityState, ModelStates
+    from gazebo_msgs.msg import ContactsState, EntityState, ModelStates
     from gazebo_msgs.srv import DeleteEntity, SetEntityState, SpawnEntity
     from geometry_msgs.msg import Pose, PoseStamped, Twist
     from nav_msgs.msg import Odometry
@@ -102,7 +102,7 @@ except Exception as exc:  # pragma: no cover - depends on the host environment.
     qos_profile_sensor_data = None
     DurabilityPolicy = QoSProfile = ReliabilityPolicy = Any  # type: ignore
     RosTime = None
-    EntityState = ModelStates = Any  # type: ignore
+    ContactsState = EntityState = ModelStates = Any  # type: ignore
     DeleteEntity = SetEntityState = SpawnEntity = SetPose = Any  # type: ignore
     Pose = PoseStamped = Twist = Any  # type: ignore
     Odometry = LaserScan = Bool = Empty = Any  # type: ignore
@@ -212,6 +212,25 @@ def scan_hits_footprint(
         if float(measured_range) <= threshold:
             return True
     return False
+
+
+def external_contact_models(
+    contact_pairs: Iterable[tuple[str, str]],
+    robot_name: str,
+) -> set[str]:
+    """Return external model names touching ``robot_name``'s contact shell."""
+    own_prefix = f"{robot_name}::"
+    external: set[str] = set()
+    for collision1, collision2 in contact_pairs:
+        first_is_own = collision1.startswith(own_prefix)
+        second_is_own = collision2.startswith(own_prefix)
+        if first_is_own == second_is_own:
+            continue
+        other = collision2 if first_is_own else collision1
+        other_model = other.split("::", 1)[0]
+        if other_model and other_model not in {robot_name, "ground_plane"}:
+            external.add(other_model)
+    return external
 
 
 def _require_gymnasium() -> None:
@@ -328,6 +347,20 @@ class SensorSnapshot:
     ground_truth_yaw: float | None
 
 
+@dataclass(frozen=True)
+class PendingStep:
+    """Action and freshness barrier prepared while Gazebo is paused."""
+
+    requested_action: np.ndarray
+    limited_action: np.ndarray
+    applied_action: np.ndarray
+    command: np.ndarray
+    command_inhibited: bool
+    command_stamp_ns: int
+    sequences: tuple[int, int, int]
+    contact_sequence: int
+
+
 class RosObservationNode(_NodeBase):
     """Own ROS subscriptions, commands and optional Gazebo service clients."""
 
@@ -352,10 +385,12 @@ class RosObservationNode(_NodeBase):
         odometry_topic: str,
         goal_topic: str,
         cmd_vel_topic: str,
+        contact_topic: str,
         fault_topic: str,
         scan_range_max: float = 8.0,
         odom_frame: str = "odom",
         robot_name: str = "robot",
+        service_namespace: str = "",
         context: Any | None = None,
         enable_gazebo_services: bool = False,
         declare_topic_parameters: bool = False,
@@ -423,6 +458,8 @@ class RosObservationNode(_NodeBase):
         self._goal: tuple[float, float, float, str] | None = None
         self._goal_sequence = 0
         self._motor_fault = False
+        self._contact_sequence = 0
+        self._contact_events: list[tuple[int, tuple[str, str]]] = []
 
         self.command_publisher = self.create_publisher(Twist, cmd_vel_topic, 10)
         self.goal_publisher = self.create_publisher(PoseStamped, goal_topic, 10)
@@ -450,6 +487,14 @@ class RosObservationNode(_NodeBase):
             self._model_states_callback,
             qos_profile_sensor_data,
         )
+        self.contact_subscription = None
+        if contact_topic:
+            self.contact_subscription = self.create_subscription(
+                ContactsState,
+                contact_topic,
+                self._contact_callback,
+                qos_profile_sensor_data,
+            )
         self.fault_subscription = None
         if fault_topic:
             fault_qos = QoSProfile(
@@ -483,10 +528,65 @@ class RosObservationNode(_NodeBase):
                 "set_pose": SetPose,
             }
             for key, candidates in self._SERVICE_CANDIDATES.items():
+                if key == "set_pose" and service_namespace:
+                    namespace = service_namespace.strip("/")
+                    candidates = (
+                        f"/{namespace}/set_pose",
+                        f"/{namespace}/ekf_filter_node/set_pose",
+                    )
                 self._service_clients[key] = [
                     (name, self.create_client(service_types[key], name))
                     for name in candidates
                 ]
+
+    def _contact_callback(self, message: Any) -> None:
+        pairs = {
+            (str(state.collision1_name), str(state.collision2_name))
+            for state in message.states
+            if state.collision1_name and state.collision2_name
+        }
+        with self._condition:
+            self._contact_sequence += 1
+            sequence = self._contact_sequence
+            self._contact_events.extend((sequence, pair) for pair in pairs)
+            self._condition.notify_all()
+
+    def clear_contacts(self) -> int:
+        """Discard old events and return the next transition's barrier."""
+        with self._condition:
+            self._contact_events.clear()
+            return self._contact_sequence
+
+    def consume_contact_pairs(
+        self,
+        *,
+        after_sequence: int | None = None,
+    ) -> set[tuple[str, str]]:
+        """Return contact events newer than a captured callback barrier."""
+        with self._condition:
+            barrier = -1 if after_sequence is None else int(after_sequence)
+            pairs = {
+                pair
+                for sequence, pair in self._contact_events
+                if sequence > barrier
+            }
+            self._contact_events.clear()
+            return pairs
+
+    def wait_for_fresh_contact_message(
+        self,
+        after_sequence: int,
+        timeout: float,
+    ) -> bool:
+        """Wait until the bumper publishes after a robot placement."""
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            while self._contact_sequence <= after_sequence:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return False
+                self._condition.wait(remaining)
+            return True
 
     def _scan_callback(self, message: Any) -> None:
         try:
@@ -962,15 +1062,19 @@ class MarthaEnv(_GymEnvBase):
         *,
         backend: str = "gazebo",
         worlds_directory: str | Path | None = None,
+        world_origins: dict[str, tuple[float, float]] | None = None,
+        preloaded_worlds: bool = False,
         scan_topic: str = "/scan",
         odometry_topic: str = "/odometry/filtered",
         goal_topic: str = "/goal_pose",
         cmd_vel_topic: str = "/cmd_vel",
+        contact_topic: str = "/contacts",
         fault_topic: str | None = None,
         scan_range_max: float = 8.0,
         min_scan_coverage: float = 0.90,
         odom_frame: str = "odom",
         robot_name: str = "robot",
+        service_namespace: str = "",
         robot_z: float = 0.0,
         reset_settle_samples: int = 3,
         max_steps: int = 300,
@@ -1053,6 +1157,7 @@ class MarthaEnv(_GymEnvBase):
         self.map_mode = map_mode
         self.map_index = map_index
         self.backend = backend
+        self.preloaded_worlds = bool(preloaded_worlds)
         self.robot_name = robot_name
         self.robot_z = float(robot_z)
         self.reset_settle_samples = reset_settle_samples
@@ -1087,11 +1192,23 @@ class MarthaEnv(_GymEnvBase):
         self.world_paths = discover_worlds(worlds_directory)
         if backend == "gazebo" and not self.world_paths:
             raise FileNotFoundError(
-                f"No mundo_N.world files found in {Path(worlds_directory)}"
+                f"No canonical training worlds found in {Path(worlds_directory)}"
             )
-        self.predefined_maps = tuple(
-            WorldMap.from_sdf(path) for path in self.world_paths
-        )
+        local_maps = tuple(WorldMap.from_sdf(path) for path in self.world_paths)
+        if world_origins is None:
+            self.predefined_maps = local_maps
+        else:
+            missing_origins = [
+                world.world_name
+                for world in local_maps
+                if world.world_name not in world_origins
+            ]
+            if missing_origins:
+                raise ValueError(f"missing world origins: {missing_origins}")
+            self.predefined_maps = tuple(
+                world.translated(*world_origins[world.world_name])
+                for world in local_maps
+            )
         if map_index is not None and not 0 <= map_index < len(self.predefined_maps):
             raise IndexError(
                 f"map_index {map_index} outside [0, {len(self.predefined_maps) - 1}]"
@@ -1115,16 +1232,18 @@ class MarthaEnv(_GymEnvBase):
         )
 
         self._runtime = _RosRuntime(
-            node_name="martha_ppo_env",
+            node_name=f"martha_ppo_env_{robot_name}",
             scan_topic=scan_topic,
             odometry_topic=odometry_topic,
             goal_topic=goal_topic,
             cmd_vel_topic=cmd_vel_topic,
+            contact_topic=(contact_topic if backend == "gazebo" else ""),
             fault_topic=fault_topic,
             scan_range_max=scan_range_max,
             min_scan_coverage=min_scan_coverage,
             odom_frame=odom_frame,
             robot_name=robot_name,
+            service_namespace=service_namespace,
             enable_gazebo_services=backend == "gazebo",
             accept_external_goal=backend != "gazebo",
             use_sim_time=backend == "gazebo",
@@ -1259,6 +1378,9 @@ class MarthaEnv(_GymEnvBase):
             )
 
     def _switch_world(self, index: int) -> None:
+        if self.preloaded_worlds:
+            self._active_world_index = index
+            return
         # Gazebo is shared external state: another process may have changed the
         # scenario even when this local environment cached the same index.
         source_names = {
@@ -1291,12 +1413,12 @@ class MarthaEnv(_GymEnvBase):
     def _cleanup_managed_gazebo_entities(self) -> None:
         """Best-effort removal of every scenario entity owned by PPO."""
         names = set(self._scenario_entity_names)
-        names.update(
-            name
-            for name in self.ros.gazebo_model_names()
-            if name.startswith(PPO_SCENARIO_ENTITY_PREFIX)
-            or name.startswith(PPO_GOAL_ENTITY_PREFIX)
-        )
+        if not self.preloaded_worlds:
+            names.update(
+                name
+                for name in self.ros.gazebo_model_names()
+                if name.startswith(PPO_SCENARIO_ENTITY_PREFIX)
+            )
         if self._goal_marker_name is not None:
             names.add(self._goal_marker_name)
         for name in sorted(names):
@@ -1306,6 +1428,9 @@ class MarthaEnv(_GymEnvBase):
 
     def _reset_world_scenario(self, index: int) -> None:
         """Reset dynamics before restoring the selected scenario geometry."""
+        if self.preloaded_worlds:
+            self._active_world_index = index
+            return
         # Gazebo remembers the initial poses of models by name.  Calling
         # reset_world after replacing (for example) wall_left can therefore
         # move that newly spawned wall back to the pose from the launch world.
@@ -1333,8 +1458,9 @@ class MarthaEnv(_GymEnvBase):
         pose.position.y = float(y)
         pose.position.z = 0.20
         pose.orientation.w = 1.0
-        self._spawn_entity(PPO_GOAL_ENTITY_NAME, GOAL_MODEL_SDF, pose)
-        self._goal_marker_name = PPO_GOAL_ENTITY_NAME
+        marker_name = f"{PPO_GOAL_ENTITY_PREFIX}{self.robot_name}"
+        self._spawn_entity(marker_name, GOAL_MODEL_SDF, pose)
+        self._goal_marker_name = marker_name
 
     def _set_robot_state(self, x: float, y: float, yaw: float) -> None:
         request = SetEntityState.Request()
@@ -1520,6 +1646,107 @@ class MarthaEnv(_GymEnvBase):
             self._episode_sample.goal_y - snapshot.ground_truth_y,
         )
 
+    def _reset_preloaded_explicit_episode(
+        self,
+        world_map: WorldMap,
+        sample: EpisodeSample,
+    ) -> SensorSnapshot:
+        """Reset one catalog episode without the legacy multi-attempt settle."""
+        goal_x, goal_y = self._world_point_in_episode_odom(
+            sample.goal_x,
+            sample.goal_y,
+            sample,
+        )
+        self.ros.set_goal(goal_x, goal_y, self.ros.odom_frame)
+        self.ros.publish_goal(goal_x, goal_y, self.ros.odom_frame)
+        self._reset_filter_pose()
+        reset_stamp_ns = self.ros.get_clock().now().nanoseconds
+        sequences = self.ros.sequence_numbers()
+        contact_sequence = self.ros.clear_contacts()
+        snapshot = None
+        fresh_contact_message = False
+        self._call_empty("unpause")
+        try:
+            # Two samples give the EKF one complete update after SetPose while
+            # all validation still happens in a single physics interval.
+            for _ in range(2):
+                snapshot = self.ros.wait_for_fresh_snapshot(
+                    sequences,
+                    self.control_timeout,
+                    use_ground_truth=True,
+                    after_stamp_ns=reset_stamp_ns,
+                )
+                if snapshot is None:
+                    break
+                sequences = (
+                    snapshot.scan_sequence,
+                    snapshot.odometry_sequence,
+                    snapshot.ground_truth_sequence,
+                )
+            fresh_contact_message = self.ros.wait_for_fresh_contact_message(
+                contact_sequence,
+                self.control_timeout,
+            )
+        finally:
+            self._call_empty("pause")
+        if snapshot is None:
+            raise TimeoutError(
+                "shared Gazebo reset did not produce fresh scan, odometry "
+                "and model state"
+            )
+        if not fresh_contact_message:
+            raise TimeoutError(
+                "shared Gazebo reset did not produce a fresh contact message"
+            )
+
+        assert snapshot.ground_truth_x is not None
+        assert snapshot.ground_truth_y is not None
+        assert snapshot.ground_truth_yaw is not None
+        truth_x = snapshot.ground_truth_x
+        truth_y = snapshot.ground_truth_y
+        truth_yaw = snapshot.ground_truth_yaw
+        wrapped_yaw = math.atan2(math.sin(snapshot.yaw), math.cos(snapshot.yaw))
+        safe = (
+            world_map.is_free_pose(truth_x, truth_y)
+            and not scan_hits_footprint(
+                snapshot.laser_sectors,
+                self.ros.scan_range_max,
+                safety_margin=self.footprint_safety_margin,
+            )
+            and math.hypot(snapshot.x, snapshot.y) <= 0.08
+            and abs(wrapped_yaw) <= 0.12
+        )
+        distance_field = world_map.distance_field(sample.goal_x, sample.goal_y)
+        shortest_path = world_map.path_distance(
+            truth_x,
+            truth_y,
+            distance_field,
+        )
+        if not safe or not math.isfinite(shortest_path):
+            raise RuntimeError(
+                "catalog reset did not settle at a safe connected pose"
+            )
+        settled_sample = EpisodeSample(
+            start_x=truth_x,
+            start_y=truth_y,
+            start_yaw=truth_yaw,
+            goal_x=sample.goal_x,
+            goal_y=sample.goal_y,
+            shortest_path=shortest_path,
+        )
+        final_goal_x, final_goal_y = self._world_point_in_episode_odom(
+            sample.goal_x,
+            sample.goal_y,
+            settled_sample,
+        )
+        self.ros.set_goal(final_goal_x, final_goal_y, self.ros.odom_frame)
+        self.ros.publish_goal(final_goal_x, final_goal_y, self.ros.odom_frame)
+        self._world_map = world_map
+        self._distance_field = distance_field
+        self._episode_sample = settled_sample
+        self.ros.clear_contacts()
+        return snapshot
+
     def _reset_gazebo(self, options: dict[str, Any]) -> SensorSnapshot:
         index = self._world_index_for_reset(options)
         world_map = self.predefined_maps[index]
@@ -1527,6 +1754,9 @@ class MarthaEnv(_GymEnvBase):
         self.ros.publish_stop()
         self._call_empty("pause")
         self._ensure_gazebo_model_inventory()
+        if self.preloaded_worlds and self._goal_marker_name is not None:
+            self._delete_entity(self._goal_marker_name, ignore_failure=True)
+            self._goal_marker_name = None
 
         # Reset dynamics before every placement attempt.  The selected
         # scenario must be restored after reset_world because Gazebo otherwise
@@ -1550,10 +1780,14 @@ class MarthaEnv(_GymEnvBase):
                 sample,
             )
             self.ros.set_goal(goal_x, goal_y, self.ros.odom_frame)
+            if self.preloaded_worlds and explicit_episode:
+                return self._reset_preloaded_explicit_episode(world_map, sample)
             settle_stamp_ns = self.ros.get_clock().now().nanoseconds
             sequences = self.ros.sequence_numbers()
+            contact_sequence = self.ros.clear_contacts()
             self._call_empty("unpause")
             settled_snapshot = None
+            fresh_contact_message = False
             try:
                 for _ in range(self.reset_settle_samples):
                     settled_snapshot = self.ros.wait_for_fresh_snapshot(
@@ -1569,6 +1803,10 @@ class MarthaEnv(_GymEnvBase):
                         settled_snapshot.odometry_sequence,
                         settled_snapshot.ground_truth_sequence,
                     )
+                fresh_contact_message = self.ros.wait_for_fresh_contact_message(
+                    contact_sequence,
+                    self.control_timeout,
+                )
             finally:
                 self._call_empty("pause")
             if settled_snapshot is None:
@@ -1576,6 +1814,10 @@ class MarthaEnv(_GymEnvBase):
                 raise TimeoutError(
                     "Gazebo reset did not produce fresh /scan, odometry and "
                     "model state"
+                )
+            if not fresh_contact_message:
+                raise TimeoutError(
+                    "Gazebo reset did not produce a fresh contact message"
                 )
 
             assert settled_snapshot.ground_truth_x is not None
@@ -1687,6 +1929,9 @@ class MarthaEnv(_GymEnvBase):
             self._world_map = world_map
             self._distance_field = distance_field
             self._episode_sample = settled_sample
+            # A post-placement bumper message has now been observed.  Clear
+            # it so only messages emitted after the next action can terminate.
+            self.ros.clear_contacts()
             return snapshot
 
         self.ros.publish_stop()
@@ -1825,11 +2070,11 @@ class MarthaEnv(_GymEnvBase):
             "reward_components": components,
         }
 
-    def step(
+    def prepare_step(
         self,
         action: Iterable[float],
-    ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
-        """Apply one normalized action and await a fresh sensor transition."""
+    ) -> PendingStep:
+        """Publish one action and capture freshness barriers while paused."""
         if self._closed:
             raise RuntimeError("MarthaEnv is closed")
         if self._last_observation is None:
@@ -1848,41 +2093,49 @@ class MarthaEnv(_GymEnvBase):
             else limited_action
         )
         command = scale_action(applied_action, self.action_limits)
+        contact_sequence = self.ros.clear_contacts()
         self.ros.publish_command(command)
         command_stamp_ns = self.ros.get_clock().now().nanoseconds
-        # On hardware, capture counters after publishing so a callback that
-        # predates this command cannot satisfy the transition wait.
         sequences = self.ros.sequence_numbers()
-        if self.backend == "gazebo":
-            self._call_empty("unpause")
-            try:
-                snapshot = self.ros.wait_for_fresh_snapshot(
-                    sequences,
-                    self.sensor_timeout,
-                    use_ground_truth=True,
-                    after_stamp_ns=command_stamp_ns,
-                )
-            finally:
-                self._call_empty("pause")
-        else:
-            snapshot = self.ros.wait_for_fresh_snapshot(
-                sequences,
-                self.sensor_timeout,
-                use_ground_truth=False,
-                after_stamp_ns=command_stamp_ns,
-            )
+        return PendingStep(
+            requested_action=requested_action,
+            limited_action=limited_action,
+            applied_action=applied_action,
+            command=command,
+            command_inhibited=command_inhibited,
+            command_stamp_ns=command_stamp_ns,
+            sequences=sequences,
+            contact_sequence=contact_sequence,
+        )
+
+    def wait_for_step_snapshot(self, pending: PendingStep) -> SensorSnapshot | None:
+        """Wait for the sensor transition associated with a prepared action."""
+        return self.ros.wait_for_fresh_snapshot(
+            pending.sequences,
+            self.sensor_timeout,
+            use_ground_truth=self.backend == "gazebo",
+            after_stamp_ns=pending.command_stamp_ns,
+        )
+
+    def finish_step(
+        self,
+        pending: PendingStep,
+        snapshot: SensorSnapshot | None,
+        *,
+        contact_collision: bool,
+    ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        """Finish reward and termination logic after shared physics pauses."""
         if snapshot is None:
             return self._timeout_transition()
 
         self._step_count += 1
-        self._previous_action = applied_action
+        self._previous_action = pending.applied_action
         observation, policy_distance = self._build_observation(snapshot)
         euclidean_distance = self._episode_euclidean_distance(
             snapshot,
             policy_distance,
         )
         world_index = None
-        cell_is_free = True
         out_of_bounds = False
         if self._world_map is not None:
             assert snapshot.ground_truth_x is not None
@@ -1894,19 +2147,8 @@ class MarthaEnv(_GymEnvBase):
                 truth_x,
                 truth_y,
             )
-            cell_is_free = self._world_map.is_free_pose(truth_x, truth_y)
         motor_fault = snapshot.motor_fault
-        geometric_collision = bool(not out_of_bounds and not cell_is_free)
-        scan_collision = scan_hits_footprint(
-            snapshot.laser_sectors,
-            self.ros.scan_range_max,
-            safety_margin=self.footprint_safety_margin,
-        )
-        collision = bool(
-            scan_collision
-            or geometric_collision
-            or motor_fault
-        )
+        collision = bool(contact_collision or motor_fault)
         reached_goal = euclidean_distance <= self.goal_tolerance
         distance = self._distance_for_metrics(snapshot, euclidean_distance)
         terminated = bool(reached_goal or collision or out_of_bounds)
@@ -1918,7 +2160,7 @@ class MarthaEnv(_GymEnvBase):
             distance=euclidean_distance,
             goal_bearing=self._goal_bearing(snapshot),
             minimum_scan=snapshot.minimum_scan,
-            angular_velocity=float(command[2]),
+            angular_velocity=float(pending.command[2]),
             reached_goal=reached_goal,
             collision=collision,
             out_of_bounds=out_of_bounds,
@@ -1950,14 +2192,38 @@ class MarthaEnv(_GymEnvBase):
                 snapshot.ground_truth_yaw,
             ),
             "goal": (snapshot.goal_x, snapshot.goal_y),
-            "requested_action": requested_action.copy(),
-            "limited_action": limited_action.copy(),
-            "applied_action": applied_action.copy(),
-            "command_inhibited": command_inhibited,
-            "command": command.copy(),
+            "requested_action": pending.requested_action.copy(),
+            "limited_action": pending.limited_action.copy(),
+            "applied_action": pending.applied_action.copy(),
+            "command_inhibited": pending.command_inhibited,
+            "command": pending.command.copy(),
             "reward_components": components,
         }
         return observation, reward, terminated, truncated, info
+
+    def step(
+        self,
+        action: Iterable[float],
+    ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        """Apply one normalized action and await a fresh sensor transition."""
+        pending = self.prepare_step(action)
+        if self.backend == "gazebo":
+            self._call_empty("unpause")
+            try:
+                snapshot = self.wait_for_step_snapshot(pending)
+            finally:
+                self._call_empty("pause")
+        else:
+            snapshot = self.wait_for_step_snapshot(pending)
+        contacts = self.ros.consume_contact_pairs(
+            after_sequence=pending.contact_sequence,
+        )
+        collision = bool(external_contact_models(contacts, self.robot_name))
+        return self.finish_step(
+            pending,
+            snapshot,
+            contact_collision=collision,
+        )
 
     def render(self) -> None:
         """Delegate visualization to the externally launched Gazebo/RViz."""
@@ -1968,6 +2234,19 @@ class MarthaEnv(_GymEnvBase):
         """Publish an explicit zero command without closing the environment."""
         if not self._closed:
             self.ros.publish_stop()
+
+    def park(self, x: float, y: float, yaw: float = 0.0) -> None:
+        """Retire this robot outside every arena without destroying its stack."""
+        if self.backend != "gazebo":
+            raise RuntimeError("parking is only available in Gazebo")
+        self.ros.publish_stop()
+        if self._goal_marker_name is not None:
+            self._delete_entity(self._goal_marker_name, ignore_failure=True)
+            self._goal_marker_name = None
+        self._set_robot_state(x, y, yaw)
+        self.ros.clear_goal()
+        self.ros.clear_contacts()
+        self._invalidate_episode_state()
 
     def close(self) -> None:
         """Publish zero velocity and release ROS resources idempotently."""
