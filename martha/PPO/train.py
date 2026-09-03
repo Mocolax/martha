@@ -953,19 +953,27 @@ def training_world_indices_for_round(
     world_count: int,
     episodes: list[int],
 ) -> list[int]:
-    """Assign concurrent fleet episodes to distinct preloaded map islands."""
+    """
+    Assign the whole concurrent fleet to one shared, rotating map.
+
+    Every robot in a round trains in the same arena, so each robot's LiDAR
+    sees the others and a contact between two robots is scored as a collision
+    for both. The other robots therefore act as moving obstacles, which is how
+    the fleet learns to avoid one another. The shared map rotates from one
+    round to the next, so every arena is still covered over training.
+
+    Recycling already recycles finished robots into a single ``world_index``
+    (see ``reset_slots``), so a shared-map round is the mode the coordinator is
+    built around; the per-island assignment only ever held at the very start of
+    a block before recycling consolidated the fleet anyway.
+    """
     if not episodes:
         return []
-    if len(episodes) > world_count:
-        raise ValueError("a mixed round cannot exceed the map count")
     if args.map_index is not None:
         return [int(args.map_index)] * len(episodes)
     round_index = (episodes[0] - 1) // max(1, args.map_batch_episodes)
-    first = shuffled_world_index(args.seed, round_index, world_count)
-    return [
-        (first + offset) % world_count
-        for offset in range(len(episodes))
-    ]
+    shared_world = shuffled_world_index(args.seed, round_index, world_count)
+    return [shared_world] * len(episodes)
 
 
 def curriculum_max_goal_distance(
