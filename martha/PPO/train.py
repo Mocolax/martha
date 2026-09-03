@@ -53,7 +53,7 @@ class TrainingDefaults:
     # An upper bound, not a commitment: max_wall_time_hours ends the run
     # first and the best evaluated policy is checkpointed along the way.
     episodes: int = 6000
-    num_envs: int = 4
+    num_envs: int = 6
     sim_speed_factor: float = 5.0
     physics_step_size: float = 0.002
     lidar_samples: int = 180
@@ -62,7 +62,7 @@ class TrainingDefaults:
     gazebo_startup_timeout: float = 240.0
     training_points: Path | None = None
     max_steps: int = 1400
-    map_batch_episodes: int = 4
+    map_batch_episodes: int = 6
     curriculum_enabled: bool = True
     curriculum_easy_fraction: float = 0.40
     curriculum_medium_fraction: float = 0.60
