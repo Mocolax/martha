@@ -727,11 +727,17 @@ def test_entropy_schedule_updates_the_live_ppo_weight():
         entropy_final_fraction=0.15,
         policy_std_initial=0.40,
         policy_std_final=0.15,
+        lr_final_fraction=0.1,
+        lr_decay_updates=3000,
     )
 
     apply_entropy_schedule(logic, args, 500)
 
     assert logic.entropy_coef == pytest.approx(0.00115)
+    # update 500 of a 3000-update decay -> lr at 1 - (500/3000)*0.9 = 0.85 base
+    assert logic.optimizer.param_groups[0]["lr"] == pytest.approx(
+        logic.base_lr * 0.85
+    )
     assert torch.exp(logic.network.actor_logstd).max().item() == pytest.approx(
         0.275
     )

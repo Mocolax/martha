@@ -31,10 +31,12 @@ class RewardConfig:
 
     # A small living cost makes finishing preferable to exhausting max_steps.
     step_penalty: float = 0.0002
-    # Equation (4): distance progress.  A retreat is deliberately softer so
-    # the agent can leave a dead end or drive around an obstacle.
+    # Equation (4): distance progress.  The two scales are equal so the term
+    # is potential-based: any approach/retreat cycle sums to zero and only net
+    # progress toward the goal pays.  An asymmetric retreat let the agent farm
+    # positive reward by oscillating in place until the timeout.
     distance_positive_scale: float = 0.05
-    distance_negative_scale: float = 0.02
+    distance_negative_scale: float = 0.05
     # Equation (7): orientation to the goal.  Looking away gets no penalty;
     # the retained field keeps recently saved paper-reward checkpoints loadable.
     orientation_positive_scale: float = 0.0001
@@ -42,7 +44,9 @@ class RewardConfig:
     # Equation (8): a new best distance within the current episode.
     shortest_distance_scale: float = 0.20
     # Equation (9): linear penalty below the physical clearance threshold.
-    laser_penalty_scale: float = 0.01
+    # Stronger than the paper's value so approaching an obstacle is punished
+    # gradually, instead of only through the sparse out-of-bounds terminal.
+    laser_penalty_scale: float = 0.03
     laser_clearance_distance: float = 0.65
     # Equations (10)-(12): excessive direct left/right reversals.
     wiggle_penalty: float = 0.00002

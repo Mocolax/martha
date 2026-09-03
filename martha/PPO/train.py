@@ -77,6 +77,13 @@ class TrainingDefaults:
     minibatch_size: int = 256
     recurrent_sequence_length: int = 64
     lr: float = 1e-4
+    # Linear learning-rate decay to lr_final_fraction over the same
+    # update clock as the entropy schedule, so late updates settle
+    # instead of overshooting the clip range.
+    lr_final_fraction: float = 0.1
+    lr_decay_updates: int = 3000
+    # Stop refining a rollout once mean KL crosses this trust region.
+    target_kl: float = 0.03
     # At 10 Hz a 0.99 discount only reaches 10 s, far short of a 140 s
     # episode: the goal and the timeout penalty both vanish. 0.997
     # extends the effective horizon to roughly 33 s.
@@ -275,6 +282,12 @@ def _validate_args(args: argparse.Namespace) -> None:
         )
     if not 0.0 <= args.entropy_final_fraction <= 1.0:
         raise ValueError("entropy_final_fraction must be in [0, 1]")
+    if not 0.0 <= args.lr_final_fraction <= 1.0:
+        raise ValueError("lr_final_fraction must be in [0, 1]")
+    if args.lr_decay_updates <= 0:
+        raise ValueError("lr_decay_updates must be positive")
+    if args.target_kl <= 0.0:
+        raise ValueError("target_kl must be positive")
     if (
         args.eval_every < 0
         or args.eval_episodes <= 0
@@ -508,6 +521,10 @@ def apply_entropy_schedule(
             update,
         )
     )
+    lr_progress = min(max(int(update) / float(args.lr_decay_updates), 0.0), 1.0)
+    ppo.set_learning_rate_fraction(
+        1.0 + lr_progress * (args.lr_final_fraction - 1.0)
+    )
 
 
 def _action_limits_from_args(args: argparse.Namespace) -> ActionLimits:
@@ -654,6 +671,7 @@ def build_agent(
         ppo_epochs=args.ppo_epochs,
         minibatch_size=args.minibatch_size,
         recurrent_sequence_length=args.recurrent_sequence_length,
+        target_kl=args.target_kl,
     )
     return network, ppo
 

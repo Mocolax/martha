@@ -23,9 +23,11 @@ class PPOLogic:
         ppo_epochs=8,
         minibatch_size=256,
         recurrent_sequence_length=32,
+        target_kl=0.03,
     ):
         """Initialize PPO-Clip hyperparameters and the Adam optimizer."""
         self.network = network
+        self.base_lr = float(lr)
         self.optimizer = optim.Adam(self.network.parameters(), lr=lr)
         self.eps = eps
         self.gamma = gamma
@@ -36,10 +38,21 @@ class PPOLogic:
         self.ppo_epochs = ppo_epochs
         self.minibatch_size = minibatch_size
         self.recurrent_sequence_length = recurrent_sequence_length
+        self.target_kl = float(target_kl)
         if self.recurrent_sequence_length <= 0:
             raise ValueError("recurrent_sequence_length must be positive")
+        if self.target_kl <= 0.0:
+            raise ValueError("target_kl must be positive")
         self.actor_parameters = list(self.network.actor_parameters())
         self.critic_parameters = list(self.network.critic_parameters())
+
+    def set_learning_rate_fraction(self, fraction: float) -> None:
+        """Scale the Adam learning rate to a fraction of its base value."""
+        fraction = float(fraction)
+        if not 0.0 <= fraction <= 1.0:
+            raise ValueError("learning-rate fraction must be in [0, 1]")
+        for group in self.optimizer.param_groups:
+            group["lr"] = self.base_lr * fraction
 
     @staticmethod
     def empty_stats():
@@ -476,6 +489,8 @@ class PPOLogic:
                 sequence_count,
                 device=prepared[0].device,
             )
+            epoch_kl_sum = 0.0
+            epoch_minibatches = 0
             for start in range(0, sequence_count, sequences_per_minibatch):
                 batch_indices = indices[start:start + sequences_per_minibatch]
                 recurrent = RecurrentState(
@@ -504,6 +519,17 @@ class PPOLogic:
                 stats["approx_kl"] += approx_kl.item()
                 stats["clip_fraction"] += clip_fraction.item()
                 stats["updates"] += 1
+                epoch_kl_sum += approx_kl.item()
+                epoch_minibatches += 1
+            # Stop refining this rollout once the policy has moved a full trust
+            # region from the data-collection policy. Without this the last
+            # epochs keep pushing past the clip range and both approx_kl and
+            # clip_fraction inflate steadily over training.
+            if (
+                epoch_minibatches > 0
+                and epoch_kl_sum / epoch_minibatches > self.target_kl
+            ):
+                break
 
         update_count = max(int(stats["updates"]), 1)
         for name in (
