@@ -8,48 +8,14 @@ import torch.nn as nn
 from torch.distributions import Normal
 
 from .actions import ACTION_SIZE
-from .observations import (
-    LASER_SECTORS,
-    OBSERVATION_FRAME_SIZE,
-    OBSERVATION_HISTORY_FRAMES,
-    OBSERVATION_SIZE,
-)
+from .observations import LASER_SECTORS, OBSERVATION_SIZE
 
 
 FUSED_FEATURE_SIZE = 384
 RECURRENT_HIDDEN_SIZE = 128
 RECURRENT_NUM_LAYERS = 1
 
-# Select which part of the canonical four-frame observation is encoded before
-# the LSTM. Use "present" to encode only the newest frame, or "history" to
-# preserve the original four-frame temporal encoder. Changing this value
-# requires training a new checkpoint.
-OBSERVATION_ENCODER_MODE = "present"
-SUPPORTED_OBSERVATION_ENCODER_MODES = ("present", "history")
-
-
-def _validate_observation_encoder_mode(mode: str) -> str:
-    """Return a supported observation encoder mode."""
-    normalized = str(mode).strip().lower()
-    if normalized not in SUPPORTED_OBSERVATION_ENCODER_MODES:
-        choices = ", ".join(SUPPORTED_OBSERVATION_ENCODER_MODES)
-        raise ValueError(
-            f"observation encoder mode must be one of: {choices}"
-        )
-    return normalized
-
-
-def policy_architecture_for_mode(mode: str) -> str:
-    """Return the checkpoint architecture name for one encoder mode."""
-    mode = _validate_observation_encoder_mode(mode)
-    if mode == "present":
-        return "present_multibranch_lstm"
-    return "temporal_multibranch_lstm"
-
-
-POLICY_ARCHITECTURE = policy_architecture_for_mode(
-    OBSERVATION_ENCODER_MODE
-)
+POLICY_ARCHITECTURE = "multibranch_lstm"
 
 
 class RecurrentState(NamedTuple):
@@ -62,47 +28,52 @@ class RecurrentState(NamedTuple):
 
 
 class NavigationFeatureExtractor(nn.Module):
-    """Encode present or historical navigation inputs by modality."""
+    """Encode one navigation frame by modality."""
 
-    def __init__(
-        self,
-        observation_encoder_mode: str | None = None,
-    ) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.observation_encoder_mode = _validate_observation_encoder_mode(
-            OBSERVATION_ENCODER_MODE
-            if observation_encoder_mode is None
-            else observation_encoder_mode
-        )
-        self.encoded_frame_count = (
-            1
-            if self.observation_encoder_mode == "present"
-            else OBSERVATION_HISTORY_FRAMES
-        )
-        self.laser_branch = nn.Sequential(
+        # The LiDAR sectors close the circle, so both convolutions wrap around
+        # the seam behind the robot instead of treating it as an edge.
+        self.laser_convolutions = nn.Sequential(
             nn.Conv1d(
-                self.encoded_frame_count,
+                1,
                 16,
                 kernel_size=6,
                 stride=3,
+                padding=3,
+                padding_mode="circular",
             ),
             nn.ReLU(),
-            nn.Conv1d(16, 32, kernel_size=5, stride=2),
+            nn.Conv1d(
+                16,
+                32,
+                kernel_size=5,
+                stride=2,
+                padding=2,
+                padding_mode="circular",
+            ),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(32 * 4, 256),
+        )
+        with torch.no_grad():
+            laser_features = self.laser_convolutions(
+                torch.zeros(1, 1, LASER_SECTORS)
+            ).shape[1]
+        self.laser_branch = nn.Sequential(
+            self.laser_convolutions,
+            nn.Linear(laser_features, 256),
             nn.ReLU(),
         )
         self.orientation_branch = nn.Sequential(
-            nn.Linear(self.encoded_frame_count * 2, 32),
+            nn.Linear(2, 32),
             nn.ReLU(),
         )
         self.distance_branch = nn.Sequential(
-            nn.Linear(self.encoded_frame_count, 16),
+            nn.Linear(1, 16),
             nn.ReLU(),
         )
         self.velocity_branch = nn.Sequential(
-            nn.Linear(self.encoded_frame_count * 3, 32),
+            nn.Linear(3, 32),
             nn.ReLU(),
         )
         self.fusion = nn.Sequential(
@@ -111,29 +82,22 @@ class NavigationFeatureExtractor(nn.Module):
         )
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
-        """Split the canonical frame-major observation and fuse its branches."""
+        """Split the canonical observation frame and fuse its branches."""
         if state.ndim != 2 or state.shape[1] != OBSERVATION_SIZE:
             raise ValueError(
                 f"state must have shape [N, {OBSERVATION_SIZE}]"
             )
-        frames = state.reshape(
-            state.shape[0],
-            OBSERVATION_HISTORY_FRAMES,
-            OBSERVATION_FRAME_SIZE,
-        )
-        if self.observation_encoder_mode == "present":
-            frames = frames[:, -1:, :]
-        laser = frames[:, :, :LASER_SECTORS]
-        distance = frames[:, :, LASER_SECTORS]
-        orientation = frames[:, :, LASER_SECTORS + 1:LASER_SECTORS + 3]
-        velocity = frames[:, :, LASER_SECTORS + 3:]
+        laser = state[:, None, :LASER_SECTORS]
+        distance = state[:, LASER_SECTORS:LASER_SECTORS + 1]
+        orientation = state[:, LASER_SECTORS + 1:LASER_SECTORS + 3]
+        velocity = state[:, LASER_SECTORS + 3:]
 
         features = torch.cat(
             (
                 self.laser_branch(laser),
-                self.orientation_branch(orientation.flatten(start_dim=1)),
+                self.orientation_branch(orientation),
                 self.distance_branch(distance),
-                self.velocity_branch(velocity.flatten(start_dim=1)),
+                self.velocity_branch(velocity),
             ),
             dim=1,
         )
@@ -145,13 +109,8 @@ class ActorCritic(nn.Module):
 
     def __init__(self) -> None:
         super().__init__()
-        self.observation_encoder_mode = _validate_observation_encoder_mode(
-            OBSERVATION_ENCODER_MODE
-        )
         self.tanh_epsilon = 1e-6
-        self.actor_feature_extractor = NavigationFeatureExtractor(
-            self.observation_encoder_mode
-        )
+        self.actor_feature_extractor = NavigationFeatureExtractor()
         self.actor_lstm = nn.LSTM(
             FUSED_FEATURE_SIZE,
             RECURRENT_HIDDEN_SIZE,
@@ -162,9 +121,7 @@ class ActorCritic(nn.Module):
         self.actor_logstd = nn.Parameter(
             torch.full((1, ACTION_SIZE), math.log(0.4))
         )
-        self.critic_feature_extractor = NavigationFeatureExtractor(
-            self.observation_encoder_mode
-        )
+        self.critic_feature_extractor = NavigationFeatureExtractor()
         self.critic_lstm = nn.LSTM(
             FUSED_FEATURE_SIZE,
             RECURRENT_HIDDEN_SIZE,
@@ -172,6 +129,33 @@ class ActorCritic(nn.Module):
             batch_first=True,
         )
         self.critic_value = nn.Linear(RECURRENT_HIDDEN_SIZE, 1)
+        self._initialize_parameters()
+
+    def _initialize_parameters(self) -> None:
+        """
+        Apply the standard PPO orthogonal initialization.
+
+        Hidden ReLU layers use a sqrt(2) gain, the value head a unit gain and
+        the policy mean a 0.01 gain, so the initial policy starts small and
+        centred instead of emitting large biased actions.
+        """
+        for module in self.modules():
+            if isinstance(module, (nn.Linear, nn.Conv1d)):
+                nn.init.orthogonal_(module.weight, gain=math.sqrt(2.0))
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0.0)
+            elif isinstance(module, nn.LSTM):
+                for name, parameter in module.named_parameters():
+                    if "weight_ih" in name:
+                        nn.init.xavier_uniform_(parameter)
+                    elif "weight_hh" in name:
+                        nn.init.orthogonal_(parameter)
+                    elif "bias" in name:
+                        nn.init.constant_(parameter, 0.0)
+        nn.init.orthogonal_(self.actor_mean.weight, gain=0.01)
+        nn.init.constant_(self.actor_mean.bias, 0.0)
+        nn.init.orthogonal_(self.critic_value.weight, gain=1.0)
+        nn.init.constant_(self.critic_value.bias, 0.0)
 
     def actor_parameters(self):
         """Yield only policy parameters for independent gradient clipping."""

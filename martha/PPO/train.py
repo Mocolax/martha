@@ -75,7 +75,10 @@ class TrainingDefaults:
     minibatch_size: int = 256
     recurrent_sequence_length: int = 64
     lr: float = 1e-4
-    gamma: float = 0.99
+    # At 10 Hz a 0.99 discount only reaches 10 s, far short of a 140 s
+    # episode: the goal and the timeout penalty both vanish. 0.997
+    # extends the effective horizon to roughly 33 s.
+    gamma: float = 0.997
     lam: float = 0.95
     eps: float = 0.2
     value_coef: float = 0.5
@@ -1878,10 +1881,13 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                         ended_indices.append(environment_index)
                         del active[environment_index]
                         timing_values = timings.metric_values()
+                        world_name = reference_env.predefined_maps[
+                            int(state["info"]["world_index"])
+                        ].world_name
                         print(
                             f"episode={episode:5d}"
                             f" | robot={environment_index}"
-                            f" | map={reference_env.predefined_maps[int(state['info']['world_index'])].world_name}"
+                            f" | map={world_name}"
                             f" | reward={state['reward']:8.2f}"
                             f" | len={state['length']:3d}"
                             f" | success={int(bool(state['info'].get('reached_goal', False)))}"

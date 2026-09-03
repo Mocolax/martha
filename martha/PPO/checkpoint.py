@@ -21,7 +21,6 @@ from .observations import (
     GOAL_GUIDANCE_MODE,
     OBSERVATION_FRAME_SIZE,
     OBSERVATION_HISTORY_FRAMES,
-    OBSERVATION_HISTORY_SECONDS,
 )
 from .network import ActorCritic, POLICY_ARCHITECTURE
 from .network import RECURRENT_HIDDEN_SIZE, RECURRENT_NUM_LAYERS
@@ -39,7 +38,6 @@ REQUIRED_CONTRACT_FIELDS = (
     "observation_layout",
     "observation_frame_size",
     "observation_history_frames",
-    "observation_history_seconds",
     "scan_range_max",
     "goal_distance_encoding",
     "goal_guidance_mode",
@@ -147,7 +145,6 @@ def validate_policy_contract(
             )
 
     for key in (
-        "observation_history_seconds",
         "scan_range_max",
         "goal_distance_scale",
     ):
@@ -157,14 +154,6 @@ def validate_policy_contract(
             raise ValueError(f"policy_contract has invalid {key}") from exc
         if not math.isfinite(actual) or actual <= 0.0:
             raise ValueError(f"policy_contract {key} must be positive")
-    if not math.isclose(
-        float(contract["observation_history_seconds"]),
-        OBSERVATION_HISTORY_SECONDS,
-        rel_tol=0.0,
-        abs_tol=1e-9,
-    ):
-        raise ValueError("policy_contract observation_history_seconds mismatch")
-
     action_limits_from_checkpoint({"policy_contract": contract})
     if expected is None:
         return

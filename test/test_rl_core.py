@@ -564,7 +564,7 @@ def test_rational_goal_distance_has_no_finite_maximum_or_clipping():
     assert 0.0 < near[0] < far[0] < 1.0
 
 
-def test_observation_history_spans_one_second_in_frame_order():
+def test_observation_history_returns_the_newest_frame_only():
     history = ObservationHistory()
     frames = [
         np.full(OBSERVATION_FRAME_SIZE, value, dtype=np.float32)
@@ -576,14 +576,8 @@ def test_observation_history_spans_one_second_in_frame_order():
     history.push(frames[2], 666_666_667)
     observation = history.push(frames[3], 1_000_000_000)
 
-    np.testing.assert_array_equal(
-        first.reshape(4, OBSERVATION_FRAME_SIZE),
-        np.stack([frames[0]] * 4),
-    )
-    np.testing.assert_array_equal(
-        observation.reshape(4, OBSERVATION_FRAME_SIZE),
-        np.stack(frames),
-    )
+    np.testing.assert_array_equal(first, frames[0])
+    np.testing.assert_array_equal(observation, frames[3])
 
 
 def test_observation_history_clears_when_ros_time_moves_backwards():
@@ -594,10 +588,7 @@ def test_observation_history_clears_when_ros_time_moves_backwards():
 
     observation = history.push(current, 1_000_000_000)
 
-    np.testing.assert_array_equal(
-        observation.reshape(4, OBSERVATION_FRAME_SIZE),
-        np.stack([current] * 4),
-    )
+    np.testing.assert_array_equal(observation, current)
 
 
 def _paper_reward(

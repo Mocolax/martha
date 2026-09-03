@@ -38,7 +38,6 @@ from .observations import (
     LASER_SECTORS,
     OBSERVATION_FRAME_SIZE,
     OBSERVATION_HISTORY_FRAMES,
-    OBSERVATION_HISTORY_SECONDS,
     OBSERVATION_SIZE,
     ObservationHistory,
     build_observation_frame,
@@ -115,7 +114,7 @@ except Exception as exc:  # pragma: no cover - depends on the host environment.
     _NodeBase = object
 
 
-POLICY_CONTRACT_VERSION = 8
+POLICY_CONTRACT_VERSION = 9
 PPO_SCENARIO_ENTITY_PREFIX = "martha_ppo_s"
 PPO_GOAL_ENTITY_PREFIX = "martha_ppo_goal_"
 PPO_GOAL_ENTITY_NAME = "martha_ppo_goal_current"
@@ -149,7 +148,6 @@ def build_policy_contract(
         "observation_layout": "frame_major",
         "observation_frame_size": OBSERVATION_FRAME_SIZE,
         "observation_history_frames": OBSERVATION_HISTORY_FRAMES,
-        "observation_history_seconds": OBSERVATION_HISTORY_SECONDS,
         "scan_range_max": float(scan_range_max),
         "goal_distance_encoding": GOAL_DISTANCE_ENCODING,
         "goal_guidance_mode": GOAL_GUIDANCE_MODE,
@@ -2734,7 +2732,6 @@ __all__ = [
     "LASER_SECTORS",
     "OBSERVATION_FRAME_SIZE",
     "OBSERVATION_HISTORY_FRAMES",
-    "OBSERVATION_HISTORY_SECONDS",
     "OBSERVATION_SIZE",
     "POLICY_CONTRACT_VERSION",
     "MarthaEnv",

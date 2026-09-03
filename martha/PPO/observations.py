@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import deque
 import math
 from typing import Iterable
 
@@ -13,12 +12,14 @@ LASER_SECTORS = 36
 GOAL_FEATURE_SIZE = 3
 VELOCITY_SIZE = 3
 OBSERVATION_FRAME_SIZE = LASER_SECTORS + GOAL_FEATURE_SIZE + VELOCITY_SIZE
-OBSERVATION_HISTORY_FRAMES = 4
-OBSERVATION_HISTORY_SECONDS = 1.0
+# The recurrent policy carries temporal context, so the observation is a
+# single frame: stacking past frames on top of an LSTM only duplicates work.
+OBSERVATION_HISTORY_FRAMES = 1
 OBSERVATION_SIZE = OBSERVATION_FRAME_SIZE * OBSERVATION_HISTORY_FRAMES
-HISTORY_AGES_SECONDS = (1.0, 2.0 / 3.0, 1.0 / 3.0, 0.0)
 GOAL_DISTANCE_ENCODING = "rational_v1"
-DEFAULT_GOAL_DISTANCE_SCALE = 3.0
+# Goals span 2 m to 18 m in training.  A scale of 6 m keeps the widest usable
+# range across that span and roughly doubles the resolution beyond 12 m.
+DEFAULT_GOAL_DISTANCE_SCALE = 6.0
 GOAL_GUIDANCE_MODE = "direct_goal_v1"
 
 
@@ -131,18 +132,17 @@ def build_observation_frame(
 
 
 class ObservationHistory:
-    """Select four observation frames distributed over one ROS-time second."""
+    """Validate and hold the newest observation frame."""
 
     def __init__(self) -> None:
-        self._frames: deque[tuple[int, np.ndarray]] = deque()
-        self._window_ns = round(OBSERVATION_HISTORY_SECONDS * 1_000_000_000)
+        self._latest: tuple[int, np.ndarray] | None = None
 
     def clear(self) -> None:
-        """Discard every frame from the current episode or navigation goal."""
-        self._frames.clear()
+        """Discard state from the current episode or navigation goal."""
+        self._latest = None
 
     def push(self, frame: np.ndarray, timestamp_ns: int) -> np.ndarray:
-        """Store a frame and return the canonical oldest-to-newest stack."""
+        """Store a frame and return the canonical observation."""
         frame = np.asarray(frame, dtype=np.float32)
         if frame.shape != (OBSERVATION_FRAME_SIZE,):
             raise ValueError(
@@ -154,24 +154,9 @@ class ObservationHistory:
         if timestamp_ns < 0:
             raise ValueError("observation timestamp must be non-negative")
 
-        if self._frames and timestamp_ns < self._frames[-1][0]:
+        # A backwards ROS clock means a new run: never carry state across it.
+        if self._latest is not None and timestamp_ns < self._latest[0]:
             self.clear()
-        if self._frames and timestamp_ns == self._frames[-1][0]:
-            self._frames[-1] = (timestamp_ns, frame.copy())
-        else:
-            self._frames.append((timestamp_ns, frame.copy()))
-
-        oldest_target = timestamp_ns - self._window_ns
-        while len(self._frames) > 2 and self._frames[1][0] < oldest_target:
-            self._frames.popleft()
-
-        selected = []
-        for age_seconds in HISTORY_AGES_SECONDS:
-            target_ns = timestamp_ns - round(age_seconds * 1_000_000_000)
-            _, closest = min(
-                self._frames,
-                key=lambda item: (abs(item[0] - target_ns), -item[0]),
-            )
-            selected.append(closest)
-        observation = np.stack(selected).reshape(OBSERVATION_SIZE)
-        return observation.astype(np.float32, copy=False)
+        observation = frame.copy()
+        self._latest = (timestamp_ns, observation)
+        return observation

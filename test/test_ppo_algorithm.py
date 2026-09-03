@@ -30,10 +30,8 @@ from martha.PPO.martha_env import (  # noqa: E402
 from martha.PPO.network import (  # noqa: E402
     ActorCritic,
     NavigationFeatureExtractor,
-    OBSERVATION_ENCODER_MODE,
     POLICY_ARCHITECTURE,
     RECURRENT_HIDDEN_SIZE,
-    policy_architecture_for_mode,
 )
 from martha.PPO.observations import (  # noqa: E402
     OBSERVATION_FRAME_SIZE,
@@ -467,78 +465,50 @@ def test_collected_recurrent_rollout_updates_lstm_parameters():
     assert len(buffer) == 0
 
 
-@pytest.mark.parametrize(
-    ("mode", "encoded_frames"),
-    (("present", 1), ("history", OBSERVATION_HISTORY_FRAMES)),
-)
-def test_navigation_encoder_modes_change_temporal_input_shape(
-    mode,
-    encoded_frames,
-):
-    extractor = NavigationFeatureExtractor(mode)
-    first_convolution = extractor.laser_branch[0]
-    second_convolution = extractor.laser_branch[2]
-    laser_linear = extractor.laser_branch[5]
+def test_navigation_encoder_consumes_one_frame_with_circular_laser_convs():
+    extractor = NavigationFeatureExtractor()
+    first_convolution = extractor.laser_branch[0][0]
+    second_convolution = extractor.laser_branch[0][2]
+    laser_linear = extractor.laser_branch[1]
 
-    assert extractor.observation_encoder_mode == mode
-    assert extractor.encoded_frame_count == encoded_frames
-    assert first_convolution.in_channels == encoded_frames
+    assert first_convolution.in_channels == 1
     assert first_convolution.out_channels == 16
     assert first_convolution.kernel_size == (6,)
     assert first_convolution.stride == (3,)
+    assert first_convolution.padding_mode == "circular"
     assert second_convolution.in_channels == 16
     assert second_convolution.out_channels == 32
     assert second_convolution.kernel_size == (5,)
     assert second_convolution.stride == (2,)
-    assert laser_linear.in_features == 128
+    assert second_convolution.padding_mode == "circular"
     assert laser_linear.out_features == 256
-    assert extractor.orientation_branch[0].in_features == encoded_frames * 2
+    assert extractor.orientation_branch[0].in_features == 2
     assert extractor.orientation_branch[0].out_features == 32
-    assert extractor.distance_branch[0].in_features == encoded_frames
+    assert extractor.distance_branch[0].in_features == 1
     assert extractor.distance_branch[0].out_features == 16
-    assert extractor.velocity_branch[0].in_features == encoded_frames * 3
+    assert extractor.velocity_branch[0].in_features == 3
     assert extractor.velocity_branch[0].out_features == 32
     assert extractor.fusion[0].in_features == 336
     assert extractor.fusion[0].out_features == 384
 
 
-def test_present_encoder_ignores_the_three_older_frames():
-    extractor = NavigationFeatureExtractor("present").eval()
-    observations = torch.randn((2, OBSERVATION_SIZE))
-    frames = observations.reshape(
-        2,
-        OBSERVATION_HISTORY_FRAMES,
-        OBSERVATION_FRAME_SIZE,
-    )
-    frames[1, -1] = frames[0, -1]
-
-    torch.testing.assert_close(
-        extractor(observations)[0],
-        extractor(observations)[1],
-    )
+def test_observation_carries_exactly_one_frame():
+    assert OBSERVATION_HISTORY_FRAMES == 1
+    assert OBSERVATION_SIZE == OBSERVATION_FRAME_SIZE
 
 
-def test_present_encoder_has_fewer_parameters_than_history_encoder():
-    present = NavigationFeatureExtractor("present")
-    history = NavigationFeatureExtractor("history")
-
-    present_parameters = sum(
-        parameter.numel() for parameter in present.parameters()
-    )
-    history_parameters = sum(
-        parameter.numel() for parameter in history.parameters()
-    )
-
-    assert present_parameters < history_parameters
-
-
-def test_default_network_architecture_matches_the_editable_mode():
+def test_policy_mean_head_starts_near_zero():
     network = ActorCritic()
 
-    assert network.observation_encoder_mode == OBSERVATION_ENCODER_MODE
-    assert POLICY_ARCHITECTURE == policy_architecture_for_mode(
-        OBSERVATION_ENCODER_MODE
-    )
+    # The 0.01 orthogonal gain must keep the initial policy small and centred.
+    assert network.actor_mean.weight.abs().max().item() < 0.05
+    assert network.actor_mean.bias.abs().max().item() == 0.0
+
+
+def test_default_network_architecture_is_the_recurrent_multibranch_encoder():
+    ActorCritic()
+
+    assert POLICY_ARCHITECTURE == "multibranch_lstm"
 
 
 def test_actor_and_critic_have_disjoint_parameters_and_gradients():
@@ -1024,19 +994,12 @@ def test_checkpoint_requires_the_canonical_policy_contract(tmp_path):
 
     assert loaded["policy_contract"] == contract
     assert limits.max_vx == pytest.approx(0.35)
-    first_convolution = restored.actor_feature_extractor.laser_branch[0]
-    assert first_convolution.in_channels == (
-        restored.actor_feature_extractor.encoded_frame_count
-    )
+    first_convolution = restored.actor_feature_extractor.laser_branch[0][0]
+    assert first_convolution.in_channels == 1
     assert first_convolution.kernel_size == (6,)
     assert restored.actor_lstm.hidden_size == RECURRENT_HIDDEN_SIZE
     incompatible_contract = dict(contract)
-    incompatible_mode = (
-        "history" if OBSERVATION_ENCODER_MODE == "present" else "present"
-    )
-    incompatible_contract["architecture"] = policy_architecture_for_mode(
-        incompatible_mode
-    )
+    incompatible_contract["architecture"] = "some_other_architecture"
     with pytest.raises(ValueError, match="architecture mismatch"):
         validate_checkpoint(
             {
