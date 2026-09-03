@@ -63,7 +63,7 @@ class TrainingDefaults:
     training_points: Path | None = None
     max_steps: int = 1400
     map_batch_episodes: int = 4
-    curriculum_enabled: bool = False
+    curriculum_enabled: bool = True
     curriculum_easy_fraction: float = 0.40
     curriculum_medium_fraction: float = 0.60
     curriculum_full_fraction: float = 0.85
