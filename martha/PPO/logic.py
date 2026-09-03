@@ -17,14 +17,12 @@ class PPOLogic:
         eps=0.2,
         gamma=0.99,
         lam=0.95,
-        actor_coef=1.0,
         value_coef=0.5,
         entropy_coef=0.01,
         max_grad_norm=0.5,
         ppo_epochs=8,
         minibatch_size=256,
         recurrent_sequence_length=32,
-        imitation_coef=1.0,
     ):
         """Initialize PPO-Clip hyperparameters and the Adam optimizer."""
         self.network = network
@@ -32,18 +30,14 @@ class PPOLogic:
         self.eps = eps
         self.gamma = gamma
         self.lam = lam
-        self.actor_coef = float(actor_coef)
         self.value_coef = value_coef
         self.entropy_coef = entropy_coef
         self.max_grad_norm = max_grad_norm
         self.ppo_epochs = ppo_epochs
         self.minibatch_size = minibatch_size
         self.recurrent_sequence_length = recurrent_sequence_length
-        self.imitation_coef = float(imitation_coef)
         if self.recurrent_sequence_length <= 0:
             raise ValueError("recurrent_sequence_length must be positive")
-        if self.actor_coef < 0.0 or self.imitation_coef < 0.0:
-            raise ValueError("actor_coef and imitation_coef cannot be negative")
         self.actor_parameters = list(self.network.actor_parameters())
         self.critic_parameters = list(self.network.critic_parameters())
 
@@ -61,8 +55,6 @@ class PPOLogic:
             "policy_std": 0.0,
             "actor_inactive_relu": 0.0,
             "critic_inactive_relu": 0.0,
-            "imitation_loss": 0.0,
-            "teacher_fraction": 0.0,
             "updates": 0,
         }
 
@@ -175,7 +167,7 @@ class PPOLogic:
         critic_loss = nn.MSELoss()(values, returns)
         entropy_loss = (entropy * policy_masks).sum() / policy_count
         loss = (
-            self.actor_coef * actor_loss
+            actor_loss
             + self.value_coef * critic_loss
             - self.entropy_coef * entropy_loss
         )
@@ -211,7 +203,7 @@ class PPOLogic:
         """Actualiza PPO con multiples epocas y minibatches."""
         if policy_masks is None:
             policy_masks = torch.ones_like(advantages)
-        if self.actor_coef > 0.0 and not torch.any(policy_masks > 0.5):
+        if not torch.any(policy_masks > 0.5):
             raise ValueError("PPO update requires at least one policy sample")
         (
             states,
@@ -332,8 +324,6 @@ class PPOLogic:
                 returns,
                 batch[8],
                 batch[9],
-                batch[10],
-                batch[11],
             )
             for start in range(0, len(buffer), sequence_length):
                 stop = min(start + sequence_length, len(buffer))
@@ -346,20 +336,20 @@ class PPOLogic:
                             for value in ordered
                         ),
                         valid,
-                        *(value[start].clone() for value in batch[12:16]),
+                        *(value[start].clone() for value in batch[10:14]),
                     )
                 )
         if not chunks:
             raise ValueError("at least one recurrent rollout is required")
         stacked = tuple(
             torch.stack([chunk[index] for chunk in chunks], dim=0)
-            for index in range(10)
+            for index in range(8)
         )
         recurrent_state = RecurrentState(
             *(
                 torch.stack([chunk[index] for chunk in chunks], dim=0)
                 .unsqueeze(0)
-                for index in range(10, 14)
+                for index in range(8, 12)
             )
         )
         return (*stacked, recurrent_state)
@@ -374,8 +364,6 @@ class PPOLogic:
             returns,
             policy_masks,
             episode_starts,
-            expert_actions,
-            expert_masks,
             valid_masks,
             recurrent_state,
         ) = sequences
@@ -387,33 +375,28 @@ class PPOLogic:
             returns,
             policy_masks,
             episode_starts,
-            expert_actions,
-            expert_masks,
             valid_masks,
         )
         tensors = tuple(value.to(device) for value in tensors)
         recurrent_state = RecurrentState(
             *(value.to(device) for value in recurrent_state)
         )
-        policy_valid = tensors[5] * tensors[9]
+        policy_valid = tensors[5] * tensors[7]
         selected_advantages = tensors[3][policy_valid > 0.5]
         if selected_advantages.numel() == 0:
-            if self.actor_coef > 0.0:
-                raise ValueError(
-                    "PPO update requires at least one policy sample"
-                )
-            normalized = torch.zeros_like(tensors[3])
+            raise ValueError(
+                "PPO update requires at least one policy sample"
+            )
+        advantage_std = selected_advantages.std(unbiased=False)
+        if (
+            torch.isfinite(advantage_std).item()
+            and advantage_std.item() > 1e-8
+        ):
+            normalized = (
+                tensors[3] - selected_advantages.mean()
+            ) / (advantage_std + 1e-8)
         else:
-            advantage_std = selected_advantages.std(unbiased=False)
-            if (
-                torch.isfinite(advantage_std).item()
-                and advantage_std.item() > 1e-8
-            ):
-                normalized = (
-                    tensors[3] - selected_advantages.mean()
-                ) / (advantage_std + 1e-8)
-            else:
-                normalized = tensors[3] - selected_advantages.mean()
+            normalized = tensors[3] - selected_advantages.mean()
         tensors = (*tensors[:3], normalized, *tensors[4:])
         return (*tensors, recurrent_state)
 
@@ -426,8 +409,6 @@ class PPOLogic:
         returns,
         policy_masks,
         episode_starts,
-        expert_actions,
-        expert_masks,
         valid_masks,
         recurrent_state,
     ):
@@ -462,21 +443,10 @@ class PPOLogic:
             values.sub(returns).square() * valid_masks
         ).sum() / valid_count
         entropy_loss = (entropy * policy_valid).sum() / policy_count
-        expert_valid = expert_masks * valid_masks
-        expert_count = expert_valid.sum().clamp_min(1.0)
-        predicted_actions = torch.tanh(distribution.mean)
-        imitation_loss = (
-            predicted_actions.sub(expert_actions).square().mean(
-                dim=-1,
-                keepdim=True,
-            )
-            * expert_valid
-        ).sum() / expert_count
         loss = (
-            self.actor_coef * actor_loss
+            actor_loss
             + self.value_coef * critic_loss
             - self.entropy_coef * entropy_loss
-            + self.imitation_coef * imitation_loss
         )
         approx_kl = (
             ((ratio - 1.0) - log_ratio) * policy_valid
@@ -491,7 +461,6 @@ class PPOLogic:
             entropy_loss,
             approx_kl,
             clip_fraction,
-            imitation_loss,
         )
 
     def _update_recurrent(self, sequences):
@@ -510,10 +479,10 @@ class PPOLogic:
             for start in range(0, sequence_count, sequences_per_minibatch):
                 batch_indices = indices[start:start + sequences_per_minibatch]
                 recurrent = RecurrentState(
-                    *(value[:, batch_indices] for value in prepared[10])
+                    *(value[:, batch_indices] for value in prepared[8])
                 )
                 loss_values = self._loss_for_recurrent_batch(
-                    *(value[batch_indices] for value in prepared[:10]),
+                    *(value[batch_indices] for value in prepared[:8]),
                     recurrent,
                 )
                 (
@@ -523,7 +492,6 @@ class PPOLogic:
                     entropy_loss,
                     approx_kl,
                     clip_fraction,
-                    imitation_loss,
                 ) = loss_values
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -535,7 +503,6 @@ class PPOLogic:
                 stats["entropy"] += entropy_loss.item()
                 stats["approx_kl"] += approx_kl.item()
                 stats["clip_fraction"] += clip_fraction.item()
-                stats["imitation_loss"] += imitation_loss.item()
                 stats["updates"] += 1
 
         update_count = max(int(stats["updates"]), 1)
@@ -546,7 +513,6 @@ class PPOLogic:
             "entropy",
             "approx_kl",
             "clip_fraction",
-            "imitation_loss",
         ):
             stats[name] /= update_count
 
@@ -554,10 +520,10 @@ class PPOLogic:
             _, _, updated_values = self.network.evaluate_action_sequences(
                 prepared[0],
                 prepared[1],
-                prepared[10],
+                prepared[8],
                 prepared[6],
             )
-            selected = prepared[9].squeeze(-1) > 0.5
+            selected = prepared[7].squeeze(-1) > 0.5
             returns = prepared[4][selected]
             values = updated_values[selected]
             return_variance = torch.var(returns, unbiased=False)

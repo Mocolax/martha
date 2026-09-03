@@ -36,7 +36,6 @@ from .observations import (
     GOAL_DISTANCE_ENCODING,
     GOAL_GUIDANCE_MODE,
     LASER_SECTORS,
-    LOCAL_WAYPOINT_DISTANCE,
     OBSERVATION_FRAME_SIZE,
     OBSERVATION_HISTORY_FRAMES,
     OBSERVATION_HISTORY_SECONDS,
@@ -44,7 +43,6 @@ from .observations import (
     ObservationHistory,
     build_observation_frame,
     goal_features,
-    local_waypoint_features,
     reduce_laser_scan,
 )
 from .reward import (
@@ -117,7 +115,7 @@ except Exception as exc:  # pragma: no cover - depends on the host environment.
     _NodeBase = object
 
 
-POLICY_CONTRACT_VERSION = 7
+POLICY_CONTRACT_VERSION = 8
 PPO_SCENARIO_ENTITY_PREFIX = "martha_ppo_s"
 PPO_GOAL_ENTITY_PREFIX = "martha_ppo_goal_"
 PPO_GOAL_ENTITY_NAME = "martha_ppo_goal_current"
@@ -155,7 +153,6 @@ def build_policy_contract(
         "scan_range_max": float(scan_range_max),
         "goal_distance_encoding": GOAL_DISTANCE_ENCODING,
         "goal_guidance_mode": GOAL_GUIDANCE_MODE,
-        "local_waypoint_distance": LOCAL_WAYPOINT_DISTANCE,
         "goal_distance_scale": float(goal_distance_scale),
         "action_limits": {
             "max_vx": float(action_limits.max_vx),
@@ -1809,9 +1806,9 @@ class MarthaEnv(_GymEnvBase):
         )
 
     def _build_observation(self, snapshot: SensorSnapshot) -> tuple[np.ndarray, float]:
-        # The policy always consumes a local waypoint.  During Gazebo training
-        # the privileged global map synthesizes that waypoint; on hardware the
-        # external global planner must publish it through /goal_pose.
+        # The policy consumes the goal directly: normalized distance plus the
+        # sine and cosine of its bearing.  No global planner is involved -- the
+        # recurrent policy must learn to route around dead ends on its own.
         goal, euclidean_distance, _ = goal_features(
             snapshot.x,
             snapshot.y,
@@ -1820,32 +1817,6 @@ class MarthaEnv(_GymEnvBase):
             snapshot.goal_y,
             self.goal_distance_scale,
         )
-        if (
-            self.backend == "gazebo"
-            and self._world_map is not None
-            and self._distance_field is not None
-            and self._episode_sample is not None
-            and snapshot.ground_truth_x is not None
-            and snapshot.ground_truth_y is not None
-            and snapshot.ground_truth_yaw is not None
-        ):
-            direction = self._world_map.geodesic_direction(
-                snapshot.ground_truth_x,
-                snapshot.ground_truth_y,
-                self._distance_field,
-            )
-            if direction is not None:
-                final_distance = math.hypot(
-                    self._episode_sample.goal_x - snapshot.ground_truth_x,
-                    self._episode_sample.goal_y - snapshot.ground_truth_y,
-                )
-                goal, _ = local_waypoint_features(
-                    direction[0],
-                    direction[1],
-                    snapshot.ground_truth_yaw,
-                    min(LOCAL_WAYPOINT_DISTANCE, final_distance),
-                    self.goal_distance_scale,
-                )
         frame = build_observation_frame(
             snapshot.laser_sectors,
             goal,
@@ -2717,40 +2688,6 @@ class MarthaEnv(_GymEnvBase):
         ):
             return None
         return float(snapshot.ground_truth_x), float(snapshot.ground_truth_y)
-
-    def expert_action(self) -> np.ndarray | None:
-        """Return privileged geodesic planar guidance for training only."""
-        snapshot = self._last_snapshot
-        if (
-            self.backend != "gazebo"
-            or self._world_map is None
-            or self._distance_field is None
-            or snapshot is None
-            or snapshot.ground_truth_x is None
-            or snapshot.ground_truth_y is None
-            or snapshot.ground_truth_yaw is None
-        ):
-            return None
-        direction = self._world_map.geodesic_direction(
-            snapshot.ground_truth_x,
-            snapshot.ground_truth_y,
-            self._distance_field,
-        )
-        if direction is None:
-            return None
-        cosine = math.cos(snapshot.ground_truth_yaw)
-        sine = math.sin(snapshot.ground_truth_yaw)
-        world_x, world_y = direction
-        body_x = cosine * world_x + sine * world_y
-        body_y = -sine * world_x + cosine * world_y
-        # A half-scale teacher can complete a 90-degree direction change
-        # within one slew-limited transition.  Full-scale grid following
-        # carries too much residual velocity through tight corners.
-        expert_speed = 0.50
-        return np.asarray(
-            [expert_speed * body_x, expert_speed * body_y, 0.0],
-            dtype=np.float32,
-        )
 
     def park(self, x: float, y: float, yaw: float = 0.0) -> None:
         """Retire this robot outside every arena without destroying its stack."""

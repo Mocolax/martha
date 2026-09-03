@@ -74,18 +74,12 @@ class TrainingDefaults:
     ppo_epochs: int = 8
     minibatch_size: int = 256
     recurrent_sequence_length: int = 64
-    imitation_enabled: bool = True
-    imitation_weight: float = 2.0
-    teacher_initial_probability: float = 1.0
-    teacher_final_probability: float = 1.0
-    teacher_decay_fraction: float = 1.0
     lr: float = 1e-4
     gamma: float = 0.99
     lam: float = 0.95
     eps: float = 0.2
-    actor_coef: float = 0.0
     value_coef: float = 0.5
-    entropy_coef: float = 0.0
+    entropy_coef: float = 0.002
     # Exploration remains constant first, then entropy encouragement fades to
     # zero so PPO can consolidate a lower variance policy when appropriate.
     entropy_exploration_fraction: float = 0.10
@@ -170,8 +164,6 @@ METRIC_FIELDS = [
     "policy_std",
     "actor_inactive_relu",
     "critic_inactive_relu",
-    "imitation_loss",
-    "teacher_fraction",
     "eval_mean_reward",
     "eval_success_rate",
     "eval_collision_rate",
@@ -303,16 +295,11 @@ def _validate_args(args: argparse.Namespace) -> None:
         "lam": args.lam,
         "eps": args.eps,
         "value-coef": args.value_coef,
-        "actor-coef": args.actor_coef,
         "entropy-coef": args.entropy_coef,
         "entropy-exploration-fraction": args.entropy_exploration_fraction,
         "entropy-decay-fraction": args.entropy_decay_fraction,
         "policy-std-initial": args.policy_std_initial,
         "policy-std-final": args.policy_std_final,
-        "imitation-weight": args.imitation_weight,
-        "teacher-initial-probability": args.teacher_initial_probability,
-        "teacher-final-probability": args.teacher_final_probability,
-        "teacher-decay-fraction": args.teacher_decay_fraction,
         "reward-scale": args.reward_scale,
         "max-grad-norm": args.max_grad_norm,
         "goal-tolerance": args.goal_tolerance,
@@ -355,33 +342,18 @@ def _validate_args(args: argparse.Namespace) -> None:
         "reward-scale",
         "physics-step-size",
         "max-wall-time-hours",
-        "imitation-weight",
     )
     if any(numeric_values[name] <= 0.0 for name in positive_names):
         raise ValueError(
             "learning, navigation and sensor limits must be positive"
         )
-    if (
-        args.actor_coef < 0.0
-        or args.value_coef < 0.0
-        or args.entropy_coef < 0.0
-    ):
+    if args.value_coef < 0.0 or args.entropy_coef < 0.0:
         raise ValueError(
-            "actor_coef, value_coef and entropy_coef cannot be negative"
+            "value_coef and entropy_coef cannot be negative"
         )
     if not 0.0 < args.policy_std_final <= args.policy_std_initial:
         raise ValueError(
             "policy STD limits must satisfy 0 < final <= initial"
-        )
-    if not (
-        0.0 <= args.teacher_final_probability
-        <= args.teacher_initial_probability
-        <= 1.0
-        and 0.0 < args.teacher_decay_fraction <= 1.0
-    ):
-        raise ValueError(
-            "teacher probabilities must decrease inside [0, 1] and the "
-            "decay fraction must be in (0, 1]"
         )
     curriculum_fractions = (
         args.curriculum_easy_fraction,
@@ -483,23 +455,6 @@ def entropy_coefficient_for_episode(
         1.0,
     )
     return float(base_coefficient) * (1.0 - decay_progress)
-
-
-def teacher_probability_for_episode(
-    args: argparse.Namespace,
-    episode: int,
-) -> float:
-    """Return the DAgger teacher-action probability for one episode."""
-    decay_episodes = max(1.0, args.episodes * args.teacher_decay_fraction)
-    progress = min(max((max(1, episode) - 1) / decay_episodes, 0.0), 1.0)
-    return float(
-        args.teacher_initial_probability
-        + progress
-        * (
-            args.teacher_final_probability
-            - args.teacher_initial_probability
-        )
-    )
 
 
 def apply_entropy_schedule(
@@ -665,14 +620,12 @@ def build_agent(
         eps=args.eps,
         gamma=args.gamma,
         lam=args.lam,
-        actor_coef=args.actor_coef,
         value_coef=args.value_coef,
         entropy_coef=args.entropy_coef,
         max_grad_norm=args.max_grad_norm,
         ppo_epochs=args.ppo_epochs,
         minibatch_size=args.minibatch_size,
         recurrent_sequence_length=args.recurrent_sequence_length,
-        imitation_coef=args.imitation_weight,
     )
     return network, ppo
 
@@ -1052,9 +1005,8 @@ def _record_shared_transition(
     timings: TrainingTimings,
     policy_sample: bool,
     next_recurrent_state: Any,
-    expert_action: np.ndarray | None = None,
 ) -> bool:
-    """Store and account for one normal or supervised fleet transition."""
+    """Store and account for one fleet transition."""
     next_observation, reward, terminated, truncated, info = transition
     episode_end = bool(terminated or truncated)
     buffer.store(
@@ -1069,7 +1021,6 @@ def _record_shared_transition(
         policy_sample=policy_sample,
         recurrent_state=state["recurrent_state"],
         episode_start=state["episode_start"],
-        expert_action=expert_action,
     )
     state["reward"] += float(reward)
     state["scaled_reward"] += scale_reward_for_ppo(reward, reward_scale)
@@ -1768,11 +1719,6 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
         print(f"LiDAR samples: {args.lidar_samples}")
         print(f"Map batch: {args.map_batch_episodes} episodes")
         print(f"Navigation curriculum: {args.curriculum_enabled}")
-        print(
-            "DAgger teacher: "
-            f"{args.teacher_initial_probability:.2f} -> "
-            f"{args.teacher_final_probability:.2f}"
-        )
         print(f"Hard wall-time limit: {args.max_wall_time_hours:.2f} h")
         print(f"Run directory: {run_dir}")
         print(f"Training points: {points_path}")
@@ -1780,8 +1726,6 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
         print(f"Action shape: {reference_env.action_space.shape}")
 
         buffers = [RolloutBuffer() for _ in range(args.num_envs)]
-        teacher_steps_since_update = 0
-        policy_steps_since_update = 0
         last_update_stats = dict(_EMPTY_UPDATE_STATS)
         completed_episode = start_episode - 1
         apply_entropy_schedule(ppo, args, max(1, completed_episode))
@@ -1793,23 +1737,11 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
 
         def maybe_update_ppo(episode_progress: int) -> None:
             nonlocal last_update_stats
-            nonlocal policy_steps_since_update
-            nonlocal teacher_steps_since_update
             if sum(len(buffer) for buffer in buffers) < args.rollout_steps:
                 return
             update_started = time.monotonic()
             apply_entropy_schedule(ppo, args, episode_progress)
             last_update_stats = ppo.train_buffers(buffers)
-            action_count = (
-                teacher_steps_since_update + policy_steps_since_update
-            )
-            last_update_stats["teacher_fraction"] = (
-                teacher_steps_since_update / action_count
-                if action_count > 0
-                else 0.0
-            )
-            teacher_steps_since_update = 0
-            policy_steps_since_update = 0
             apply_entropy_schedule(ppo, args, episode_progress)
             timings.ppo_wall_s += time.monotonic() - update_started
             for name, stat in last_update_stats.items():
@@ -1903,33 +1835,10 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                         observations,
                         recurrent_state,
                         episode_starts=episode_starts,
-                        deterministic=args.actor_coef == 0.0,
+                        deterministic=False,
                     )
                 )
-                action_values = actions.numpy().astype(np.float32)
-                expert_actions = (
-                    {
-                        index: group.environments[index].expert_action()
-                        for index in indices
-                    }
-                    if args.imitation_enabled
-                    else {}
-                )
-                teacher_actions: dict[int, bool] = {}
-                executed_action_values = action_values.copy()
-                for batch_index, index in enumerate(indices):
-                    expert_action = expert_actions.get(index)
-                    use_teacher = bool(
-                        expert_action is not None
-                        and np.random.random()
-                        < teacher_probability_for_episode(
-                            args,
-                            int(active[index]["episode"]),
-                        )
-                    )
-                    teacher_actions[index] = use_teacher
-                    if use_teacher:
-                        executed_action_values[batch_index] = expert_action
+                executed_action_values = actions.numpy().astype(np.float32)
                 physics_started = time.monotonic()
                 transitions_by_index = group.step_batch({
                     index: executed_action_values[batch_index]
@@ -1947,12 +1856,6 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                 ended_indices = []
                 for batch_index, environment_index in enumerate(indices):
                     state = active[environment_index]
-                    expert_action = expert_actions.get(environment_index)
-                    used_teacher = teacher_actions[environment_index]
-                    if used_teacher:
-                        teacher_steps_since_update += 1
-                    else:
-                        policy_steps_since_update += 1
                     episode_end = _record_shared_transition(
                         state=state,
                         transition=transitions[batch_index],
@@ -1963,12 +1866,11 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                         buffer=buffers[environment_index],
                         reward_scale=args.reward_scale,
                         timings=timings,
-                        policy_sample=not used_teacher,
+                        policy_sample=True,
                         next_recurrent_state=network.recurrent_state_at(
                             next_recurrent_state,
                             batch_index,
                         ),
-                        expert_action=expert_action,
                     )
                     if episode_end:
                         episode = int(state["episode"])
@@ -2181,14 +2083,6 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
             update_started = time.monotonic()
             apply_entropy_schedule(ppo, args, completed_episode)
             last_update_stats = ppo.train_buffers(buffers)
-            action_count = (
-                teacher_steps_since_update + policy_steps_since_update
-            )
-            last_update_stats["teacher_fraction"] = (
-                teacher_steps_since_update / action_count
-                if action_count > 0
-                else 0.0
-            )
             apply_entropy_schedule(ppo, args, completed_episode)
             timings.ppo_wall_s += time.monotonic() - update_started
             for name, stat in last_update_stats.items():

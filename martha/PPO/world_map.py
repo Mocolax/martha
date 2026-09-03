@@ -547,66 +547,6 @@ class WorldMap:
             return float(distance_field[index])
         return weighted_distance / total_weight
 
-    def geodesic_direction(
-        self,
-        x: float,
-        y: float,
-        distance_field: np.ndarray,
-        *,
-        lookahead: float | None = None,
-    ) -> tuple[float, float] | None:
-        """Return a unit world-frame direction descending the path field."""
-        index = self.grid_index(x, y)
-        if index is None or not self.free[index]:
-            return None
-        if distance_field.shape != self.free.shape:
-            raise ValueError("distance field shape does not match the map")
-        if lookahead is None:
-            lookahead = self.resolution
-        steps = max(1, int(math.ceil(float(lookahead) / self.resolution)))
-        row, column = index
-        rows, columns = self.free.shape
-        for _ in range(steps):
-            current_distance = float(distance_field[row, column])
-            best = (row, column)
-            best_distance = current_distance
-            for delta_row, delta_column in (
-                (-1, 0),
-                (1, 0),
-                (0, -1),
-                (0, 1),
-                (-1, -1),
-                (-1, 1),
-                (1, -1),
-                (1, 1),
-            ):
-                neighbor_row = row + delta_row
-                neighbor_column = column + delta_column
-                if not 0 <= neighbor_row < rows or not 0 <= neighbor_column < columns:
-                    continue
-                if not self.free[neighbor_row, neighbor_column]:
-                    continue
-                if delta_row and delta_column:
-                    if not self.free[row, neighbor_column]:
-                        continue
-                    if not self.free[neighbor_row, column]:
-                        continue
-                candidate = float(distance_field[neighbor_row, neighbor_column])
-                if candidate + 1e-9 < best_distance:
-                    best = (neighbor_row, neighbor_column)
-                    best_distance = candidate
-            if best == (row, column):
-                break
-            row, column = best
-        target_x = float(self.x_coordinates[column])
-        target_y = float(self.y_coordinates[row])
-        delta_x = target_x - float(x)
-        delta_y = target_y - float(y)
-        norm = math.hypot(delta_x, delta_y)
-        if norm <= 1e-6 or not math.isfinite(norm):
-            return None
-        return delta_x / norm, delta_y / norm
-
     def contains_safe_center(self, x: float, y: float) -> bool:
         """Return whether a pose center lies inside the inflated arena grid."""
         return self.grid_index(x, y) is not None

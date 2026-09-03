@@ -398,12 +398,12 @@ def test_recurrent_rollout_chunks_keep_resets_padding_and_initial_memory():
     sequences = logic._recurrent_sequences(buffers)
 
     assert sequences[0].shape == (2, 4, OBSERVATION_SIZE)
-    assert sequences[9].sum().item() == pytest.approx(4.0)
+    assert sequences[7].sum().item() == pytest.approx(4.0)
     torch.testing.assert_close(
         sequences[6][0, :, 0],
         torch.tensor([1.0, 0.0, 1.0, 0.0]),
     )
-    assert sequences[10].actor_h.shape == (
+    assert sequences[8].actor_h.shape == (
         1,
         2,
         RECURRENT_HIDDEN_SIZE,

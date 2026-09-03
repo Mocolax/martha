@@ -3,7 +3,6 @@
 import numpy as np
 import torch
 
-from .actions import ACTION_SIZE
 from .network import RECURRENT_HIDDEN_SIZE, RecurrentState
 
 
@@ -26,8 +25,6 @@ class RolloutBuffer:
         self.episode_ends = []
         self.policy_masks = []
         self.episode_starts = []
-        self.expert_actions = []
-        self.expert_masks = []
         self.actor_h = []
         self.actor_c = []
         self.critic_h = []
@@ -84,7 +81,6 @@ class RolloutBuffer:
         policy_sample=True,
         recurrent_state=None,
         episode_start=None,
-        expert_action=None,
     ):
         """Store one truncation-safe transition."""
         if episode_start is None:
@@ -100,19 +96,6 @@ class RolloutBuffer:
         self.episode_ends.append(float(episode_end))
         self.policy_masks.append(float(bool(policy_sample)))
         self.episode_starts.append(float(bool(episode_start)))
-        if expert_action is None:
-            self.expert_actions.append(
-                np.zeros(ACTION_SIZE, dtype=np.float32)
-            )
-            self.expert_masks.append(0.0)
-        else:
-            expert = self._remove_batch_dim(expert_action)
-            if expert.shape != (ACTION_SIZE,) or not np.isfinite(expert).all():
-                raise ValueError(
-                    f"expert_action must be finite with shape ({ACTION_SIZE},)"
-                )
-            self.expert_actions.append(expert.copy())
-            self.expert_masks.append(1.0)
         self.actor_h.append(recurrent[0])
         self.actor_c.append(recurrent[1])
         self.critic_h.append(recurrent[2])
@@ -129,8 +112,6 @@ class RolloutBuffer:
         self.episode_ends.clear()
         self.policy_masks.clear()
         self.episode_starts.clear()
-        self.expert_actions.clear()
-        self.expert_masks.clear()
         self.actor_h.clear()
         self.actor_c.clear()
         self.critic_h.clear()
@@ -160,13 +141,6 @@ class RolloutBuffer:
         return self.get_training_batch() + (
             torch.as_tensor(
                 self.episode_starts,
-                dtype=torch.float32,
-            ).view(-1, 1),
-            torch.as_tensor(
-                np.asarray(self.expert_actions, dtype=np.float32)
-            ),
-            torch.as_tensor(
-                self.expert_masks,
                 dtype=torch.float32,
             ).view(-1, 1),
             torch.as_tensor(np.asarray(self.actor_h, dtype=np.float32)),

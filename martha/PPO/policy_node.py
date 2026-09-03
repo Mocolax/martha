@@ -35,7 +35,6 @@ from .martha_env import (
 from .observations import (
     DEFAULT_GOAL_DISTANCE_SCALE,
     GOAL_GUIDANCE_MODE,
-    LOCAL_WAYPOINT_DISTANCE,
     ObservationHistory,
     build_observation_frame,
     goal_features,
@@ -218,8 +217,7 @@ class PolicyNode(RosObservationNode):
         self.publish_stop()
         self.get_logger().info(
             f"PPO policy loaded on {self.device}; guidance={GOAL_GUIDANCE_MODE}; "
-            f"waiting for a ~{LOCAL_WAYPOINT_DISTANCE:.2f} m local waypoint "
-            "on /goal_pose"
+            "waiting for a final goal pose on /goal_pose"
         )
 
     def _set_state(self, state: str, reason: str | None = None) -> None:
@@ -251,17 +249,15 @@ class PolicyNode(RosObservationNode):
                 "Ignoring goal while faulted; clear the cause and call ~/rearm"
             )
             return
-        was_active = self.policy_state == STATE_ACTIVE
         if not super()._goal_callback(message):
             return
-        # A global planner is expected to stream the moving 0.50 m waypoint.
-        # Those updates are part of one navigation episode and must not erase
-        # the LSTM/history or restart the action slew limiter every cycle.
-        if not was_active:
-            self._activation_wall_time = time.monotonic()
-            self._previous_action.fill(0.0)
-            self._reset_policy_memory()
-            self._set_state(STATE_ACTIVE, "new local-guidance stream")
+        # One goal pose is one navigation episode, exactly as during training:
+        # every goal starts from a fresh LSTM state, an empty observation
+        # history and a slew limiter that ramps up from a full stop.
+        self._activation_wall_time = time.monotonic()
+        self._previous_action.fill(0.0)
+        self._reset_policy_memory()
+        self._set_state(STATE_ACTIVE, "new goal pose")
 
     def _fault_callback(self, message: Any) -> None:
         was_faulted = self._fault_latched

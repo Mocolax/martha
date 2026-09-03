@@ -19,8 +19,7 @@ OBSERVATION_SIZE = OBSERVATION_FRAME_SIZE * OBSERVATION_HISTORY_FRAMES
 HISTORY_AGES_SECONDS = (1.0, 2.0 / 3.0, 1.0 / 3.0, 0.0)
 GOAL_DISTANCE_ENCODING = "rational_v1"
 DEFAULT_GOAL_DISTANCE_SCALE = 3.0
-GOAL_GUIDANCE_MODE = "local_waypoint_v1"
-LOCAL_WAYPOINT_DISTANCE = 0.50
+GOAL_GUIDANCE_MODE = "direct_goal_v1"
 
 
 def normalize_angle(angle: float) -> float:
@@ -89,42 +88,6 @@ def goal_features(
         dtype=np.float32,
     )
     return features, distance, bearing
-
-
-def local_waypoint_features(
-    direction_x: float,
-    direction_y: float,
-    robot_yaw: float,
-    waypoint_distance: float,
-    goal_distance_scale: float,
-) -> tuple[np.ndarray, float]:
-    """Encode a world-frame local guidance direction in the policy frame."""
-    values = np.asarray(
-        [direction_x, direction_y, robot_yaw, waypoint_distance],
-        dtype=np.float64,
-    )
-    if not np.isfinite(values).all():
-        raise ValueError("local waypoint values must be finite")
-    if waypoint_distance < 0.0:
-        raise ValueError("waypoint_distance cannot be negative")
-    if not math.isfinite(goal_distance_scale) or goal_distance_scale <= 0.0:
-        raise ValueError("goal_distance_scale must be positive and finite")
-    direction_norm = math.hypot(direction_x, direction_y)
-    if direction_norm <= 1e-9:
-        raise ValueError("local waypoint direction cannot be zero")
-    bearing = normalize_angle(
-        math.atan2(direction_y, direction_x) - robot_yaw
-    )
-    normalized_distance = waypoint_distance / (
-        waypoint_distance + goal_distance_scale
-    )
-    return (
-        np.asarray(
-            [normalized_distance, math.sin(bearing), math.cos(bearing)],
-            dtype=np.float32,
-        ),
-        bearing,
-    )
 
 
 def build_observation_frame(
