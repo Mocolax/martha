@@ -46,7 +46,8 @@ from martha.PPO.train import (  # noqa: E402
     _truncate_active_for_wall_limit,
     apply_entropy_schedule,
     curriculum_max_goal_distance,
-    entropy_coefficient_for_episode,
+    entropy_coefficient_for_update,
+    policy_std_ceiling_for_update,
     _validate_resume_reward_scale,
     parse_args,
     scale_reward_for_ppo,
@@ -670,44 +671,67 @@ def test_reward_scaling_preserves_raw_reward_for_reporting():
     assert raw_reward == pytest.approx(-120.5)
 
 
-def test_entropy_schedule_has_exploration_consolidation_and_refinement_phases():
+def test_entropy_schedule_holds_decays_then_settles_on_a_floor():
     coefficient = 0.002
+    # 200 updates at full strength, a 600-update ramp, then a 15% floor.
+    schedule = lambda update: entropy_coefficient_for_update(  # noqa: E731
+        coefficient, 200, 600, 0.15, update
+    )
 
-    assert entropy_coefficient_for_episode(
-        coefficient, 2000, 0.60, 0.30, 1
-    ) == pytest.approx(coefficient)
-    assert entropy_coefficient_for_episode(
-        coefficient, 2000, 0.60, 0.30, 1200
-    ) == pytest.approx(coefficient)
-    assert entropy_coefficient_for_episode(
-        coefficient, 2000, 0.60, 0.30, 1500
-    ) == pytest.approx(0.001)
-    assert entropy_coefficient_for_episode(
-        coefficient, 2000, 0.60, 0.30, 1800
+    assert schedule(0) == pytest.approx(coefficient)
+    assert schedule(200) == pytest.approx(coefficient)
+    assert schedule(500) == pytest.approx(0.00115)
+    assert schedule(800) == pytest.approx(0.0003)
+    # The floor holds for the rest of the run instead of reaching zero.
+    assert schedule(5000) == pytest.approx(0.0003)
+    assert schedule(5000) > 0.0
+
+
+def test_entropy_schedule_never_rises_and_respects_its_floor():
+    coefficient = 0.002
+    values = [
+        entropy_coefficient_for_update(coefficient, 200, 600, 0.15, update)
+        for update in range(0, 1200, 25)
+    ]
+
+    assert all(
+        later <= earlier + 1e-12
+        for earlier, later in zip(values, values[1:])
+    )
+    assert max(values) == pytest.approx(coefficient)
+    assert min(values) == pytest.approx(coefficient * 0.15)
+    # A zero final fraction still reproduces the old decay-to-nothing shape.
+    assert entropy_coefficient_for_update(
+        coefficient, 200, 600, 0.0, 800
     ) == pytest.approx(0.0)
-    assert entropy_coefficient_for_episode(
-        coefficient, 2000, 0.60, 0.30, 2000
-    ) == pytest.approx(0.0)
-    # The same fractions scale the phase boundaries for a shorter run.
-    assert entropy_coefficient_for_episode(
-        coefficient, 1000, 0.60, 0.30, 750
-    ) == pytest.approx(0.001)
+
+
+def test_policy_std_ceiling_follows_the_same_update_clock():
+    assert policy_std_ceiling_for_update(
+        0.40, 0.15, 200, 600, 0
+    ) == pytest.approx(0.40)
+    assert policy_std_ceiling_for_update(
+        0.40, 0.15, 200, 600, 500
+    ) == pytest.approx(0.275)
+    assert policy_std_ceiling_for_update(
+        0.40, 0.15, 200, 600, 800
+    ) == pytest.approx(0.15)
 
 
 def test_entropy_schedule_updates_the_live_ppo_weight():
     logic = _logic()
     args = SimpleNamespace(
         entropy_coef=0.002,
-        episodes=2000,
-        entropy_exploration_fraction=0.60,
-        entropy_decay_fraction=0.30,
+        entropy_exploration_updates=200,
+        entropy_decay_updates=600,
+        entropy_final_fraction=0.15,
         policy_std_initial=0.40,
         policy_std_final=0.15,
     )
 
-    apply_entropy_schedule(logic, args, 1500)
+    apply_entropy_schedule(logic, args, 500)
 
-    assert logic.entropy_coef == pytest.approx(0.001)
+    assert logic.entropy_coef == pytest.approx(0.00115)
     assert torch.exp(logic.network.actor_logstd).max().item() == pytest.approx(
         0.275
     )

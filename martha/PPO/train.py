@@ -50,7 +50,9 @@ from martha.simulation_speed import (
 # overridden temporarily from the command line without changing this file.
 @dataclass(frozen=True)
 class TrainingDefaults:
-    episodes: int = 400
+    # An upper bound, not a commitment: max_wall_time_hours ends the run
+    # first and the best evaluated policy is checkpointed along the way.
+    episodes: int = 6000
     num_envs: int = 4
     sim_speed_factor: float = 5.0
     physics_step_size: float = 0.002
@@ -85,10 +87,19 @@ class TrainingDefaults:
     entropy_coef: float = 0.002
     # Exploration remains constant first, then entropy encouragement fades to
     # zero so PPO can consolidate a lower variance policy when appropriate.
-    entropy_exploration_fraction: float = 0.10
-    entropy_decay_fraction: float = 0.25
+    # The schedule is measured in completed PPO updates, not episodes: an
+    # episode lasts anywhere from a quick collision to a full timeout, so an
+    # episode clock runs fastest exactly when the agent is doing worst and
+    # needs exploration most.  One update covers rollout_steps environment
+    # steps, so this clock tracks the experience actually collected.
+    entropy_exploration_updates: int = 200
+    entropy_decay_updates: int = 600
+    # Exploration is annealed towards a floor instead of exactly zero, so the
+    # learned STD cannot collapse into a deterministic policy that has no way
+    # back out of whatever behaviour it settled on.
+    entropy_final_fraction: float = 0.15
     policy_std_initial: float = 0.40
-    policy_std_final: float = 0.40
+    policy_std_final: float = 0.15
     reward_scale: float = 1
     max_grad_norm: float = 0.5
     eval_every: int = 100
@@ -257,20 +268,13 @@ def _validate_args(args: argparse.Namespace) -> None:
     for name, value in positive_ints.items():
         if value <= 0:
             raise ValueError(f"TrainingDefaults.{name} must be positive")
-    if (
-        not 0.0 <= args.entropy_exploration_fraction <= 1.0
-        or not 0.0 < args.entropy_decay_fraction <= 1.0
-        or (
-            args.entropy_exploration_fraction
-            + args.entropy_decay_fraction
-            > 1.0
-        )
-    ):
+    if args.entropy_exploration_updates < 0 or args.entropy_decay_updates <= 0:
         raise ValueError(
-            "entropy exploration and decay fractions must be in [0, 1], "
-            "the decay fraction must be positive, and their sum cannot "
-            "exceed 1"
+            "entropy_exploration_updates cannot be negative and "
+            "entropy_decay_updates must be positive"
         )
+    if not 0.0 <= args.entropy_final_fraction <= 1.0:
+        raise ValueError("entropy_final_fraction must be in [0, 1]")
     if (
         args.eval_every < 0
         or args.eval_episodes <= 0
@@ -299,8 +303,7 @@ def _validate_args(args: argparse.Namespace) -> None:
         "eps": args.eps,
         "value-coef": args.value_coef,
         "entropy-coef": args.entropy_coef,
-        "entropy-exploration-fraction": args.entropy_exploration_fraction,
-        "entropy-decay-fraction": args.entropy_decay_fraction,
+        "entropy-final-fraction": args.entropy_final_fraction,
         "policy-std-initial": args.policy_std_initial,
         "policy-std-final": args.policy_std_final,
         "reward-scale": args.reward_scale,
@@ -432,57 +435,79 @@ def scale_reward_for_ppo(reward: float, reward_scale: float) -> float:
     return scaled
 
 
-def entropy_coefficient_for_episode(
+def entropy_coefficient_for_update(
     base_coefficient: float,
-    total_episodes: int,
-    exploration_fraction: float,
-    decay_fraction: float,
-    episode: int,
+    exploration_updates: int,
+    decay_updates: int,
+    final_fraction: float,
+    update: int,
 ) -> float:
     """
-    Return the deterministic three-phase entropy coefficient for PPO.
+    Return the three-phase entropy coefficient for one PPO update index.
 
-    The phase durations are percentages of the configured total episode count,
-    not fixed episode counts, wall-clock time, or noisy evaluation results.
-    This makes the schedule scale with run length and remain deterministic for
-    sequential or parallel Gazebo collection.
+    The clock is completed PPO updates, so it advances with the experience
+    actually collected rather than with an episode count whose pace depends
+    on how early the agent happens to be crashing.  The coefficient holds at
+    its base value, decays linearly, and then settles on a floor that keeps a
+    little exploration alive for the rest of the run.
     """
-    exploration_end = total_episodes * exploration_fraction
-    decay_duration = total_episodes * decay_fraction
-    if episode <= exploration_end:
+    if base_coefficient < 0.0:
+        raise ValueError("base entropy coefficient cannot be negative")
+    if decay_updates <= 0:
+        raise ValueError("decay_updates must be positive")
+    if not 0.0 <= final_fraction <= 1.0:
+        raise ValueError("final_fraction must be in [0, 1]")
+    floor = float(base_coefficient) * float(final_fraction)
+    update = max(0, int(update))
+    if update <= exploration_updates:
         return float(base_coefficient)
-    if episode >= exploration_end + decay_duration:
-        return 0.0
-    decay_progress = min(
-        max((episode - exploration_end) / decay_duration, 0.0),
+    progress = min(
+        max((update - exploration_updates) / float(decay_updates), 0.0),
         1.0,
     )
-    return float(base_coefficient) * (1.0 - decay_progress)
+    return float(base_coefficient) + progress * (floor - base_coefficient)
+
+
+def policy_std_ceiling_for_update(
+    initial_std: float,
+    final_std: float,
+    exploration_updates: int,
+    decay_updates: int,
+    update: int,
+) -> float:
+    """Return the learned-STD ceiling on the same PPO update clock."""
+    if decay_updates <= 0:
+        raise ValueError("decay_updates must be positive")
+    update = max(0, int(update))
+    progress = min(
+        max((update - exploration_updates) / float(decay_updates), 0.0),
+        1.0,
+    )
+    return float(initial_std) + progress * (float(final_std) - float(initial_std))
 
 
 def apply_entropy_schedule(
     ppo: PPOLogic,
     args: argparse.Namespace,
-    episode: int,
+    update: int,
 ) -> None:
-    """Apply the entropy weight and learned-STD ceiling for this episode."""
-    ppo.entropy_coef = entropy_coefficient_for_episode(
+    """Apply the entropy weight and learned-STD ceiling for one update."""
+    ppo.entropy_coef = entropy_coefficient_for_update(
         args.entropy_coef,
-        args.episodes,
-        args.entropy_exploration_fraction,
-        args.entropy_decay_fraction,
-        max(1, episode),
+        args.entropy_exploration_updates,
+        args.entropy_decay_updates,
+        args.entropy_final_fraction,
+        update,
     )
-    decay_start = args.episodes * args.entropy_exploration_fraction
-    decay_duration = args.episodes * args.entropy_decay_fraction
-    decay_progress = min(
-        max((max(1, episode) - decay_start) / decay_duration, 0.0),
-        1.0,
+    ppo.network.clamp_policy_std(
+        policy_std_ceiling_for_update(
+            args.policy_std_initial,
+            args.policy_std_final,
+            args.entropy_exploration_updates,
+            args.entropy_decay_updates,
+            update,
+        )
     )
-    std_ceiling = args.policy_std_initial + decay_progress * (
-        args.policy_std_final - args.policy_std_initial
-    )
-    ppo.network.clamp_policy_std(std_ceiling)
 
 
 def _action_limits_from_args(args: argparse.Namespace) -> ActionLimits:
@@ -695,10 +720,14 @@ def save_checkpoint(
     args: argparse.Namespace,
     episode: int,
     best_eval_metrics: dict[str, float],
+    updates: int = 0,
 ) -> None:
     """Save policy, optimizer and the complete runtime contract."""
     checkpoint = {
         "episode": int(episode),
+        # The entropy schedule runs on this clock, so a resumed run has to
+        # continue annealing instead of restarting exploration.
+        "updates": int(updates),
         "model_state_dict": network.state_dict(),
         "optimizer_state_dict": ppo.optimizer.state_dict(),
         "best_eval_metrics": dict(best_eval_metrics),
@@ -737,8 +766,8 @@ def _restore_resume_state(
     checkpoint: dict[str, Any],
     network: ActorCritic,
     ppo: PPOLogic,
-) -> tuple[int, dict[str, float]]:
-    """Restore model, optimizer and optional random-generator states."""
+) -> tuple[int, dict[str, float], int]:
+    """Restore model, optimizer, update counter and generator states."""
     network.load_state_dict(checkpoint["model_state_dict"])
     ppo.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     rng_state = checkpoint.get("rng_state", {})
@@ -778,7 +807,7 @@ def _restore_resume_state(
                 "resume checkpoint best_eval_score disagrees with "
                 "best_eval_metrics"
             )
-    return start_episode, best_metrics
+    return start_episode, best_metrics, int(checkpoint.get("updates", 0))
 
 
 def make_run_dir(args: argparse.Namespace) -> Path:
@@ -1255,6 +1284,7 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
         raise
     buffer = RolloutBuffer()
     start_episode = 1
+    completed_updates = 0
     best_eval_metrics = dict(_EMPTY_BEST_EVAL)
     if resume_checkpoint is not None:
         try:
@@ -1263,7 +1293,11 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                 expected_contract=env.policy_contract,
                 require_optimizer=True,
             )
-            start_episode, best_eval_metrics = _restore_resume_state(
+            (
+                start_episode,
+                best_eval_metrics,
+                completed_updates,
+            ) = _restore_resume_state(
                 resume_checkpoint,
                 network,
                 ppo,
@@ -1293,7 +1327,6 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
     completed_episode = start_episode - 1
     try:
         for episode in range(start_episode, args.episodes + 1):
-            apply_entropy_schedule(ppo, args, episode)
             train_seed = episode_seed(args.seed, 0, episode)
             _confirm_hardware_reset(args, f"training episode {episode}")
             observation, reset_info = env.reset(
@@ -1385,9 +1418,9 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                 episode_start = False
 
                 if len(buffer) >= args.rollout_steps:
-                    apply_entropy_schedule(ppo, args, episode)
+                    apply_entropy_schedule(ppo, args, completed_updates)
                     last_update_stats = ppo.train_buffer(buffer)
-                    apply_entropy_schedule(ppo, args, episode)
+                    completed_updates += 1
                     for name, stat in last_update_stats.items():
                         assert_finite(name, stat)
                 if episode_end:
@@ -1424,6 +1457,7 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                         args,
                         episode,
                         best_eval_metrics,
+                        completed_updates,
                     )
 
             save_checkpoint(
@@ -1434,6 +1468,7 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                 args,
                 episode,
                 best_eval_metrics,
+                completed_updates,
             )
             write_metric(
                 metrics_path,
@@ -1492,9 +1527,9 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
             )
 
         if len(buffer) > 0:
-            apply_entropy_schedule(ppo, args, completed_episode)
+            apply_entropy_schedule(ppo, args, completed_updates)
             last_update_stats = ppo.train_buffer(buffer)
-            apply_entropy_schedule(ppo, args, completed_episode)
+            completed_updates += 1
             for name, stat in last_update_stats.items():
                 assert_finite(name, stat)
         save_checkpoint(
@@ -1505,6 +1540,7 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
             args,
             completed_episode,
             best_eval_metrics,
+            completed_updates,
         )
         if not best_model_path.exists():
             save_checkpoint(
@@ -1515,6 +1551,7 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                 args,
                 completed_episode,
                 best_eval_metrics,
+                completed_updates,
             )
     finally:
         env.close()
@@ -1696,6 +1733,7 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
     try:
         network, ppo = build_agent(args, device)
         start_episode = 1
+        completed_updates = 0
         best_eval_metrics = dict(_EMPTY_BEST_EVAL)
         if resume_checkpoint is not None:
             validate_checkpoint_data(
@@ -1703,7 +1741,11 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                 expected_contract=reference_env.policy_contract,
                 require_optimizer=True,
             )
-            start_episode, best_eval_metrics = _restore_resume_state(
+            (
+                start_episode,
+                best_eval_metrics,
+                completed_updates,
+            ) = _restore_resume_state(
                 resume_checkpoint,
                 network,
                 ppo,
@@ -1731,7 +1773,7 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
         buffers = [RolloutBuffer() for _ in range(args.num_envs)]
         last_update_stats = dict(_EMPTY_UPDATE_STATS)
         completed_episode = start_episode - 1
-        apply_entropy_schedule(ppo, args, max(1, completed_episode))
+        apply_entropy_schedule(ppo, args, completed_updates)
         next_evaluation = (
             math.inf
             if args.eval_every == 0
@@ -1740,12 +1782,13 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
 
         def maybe_update_ppo(episode_progress: int) -> None:
             nonlocal last_update_stats
+            nonlocal completed_updates
             if sum(len(buffer) for buffer in buffers) < args.rollout_steps:
                 return
             update_started = time.monotonic()
-            apply_entropy_schedule(ppo, args, episode_progress)
+            apply_entropy_schedule(ppo, args, completed_updates)
             last_update_stats = ppo.train_buffers(buffers)
-            apply_entropy_schedule(ppo, args, episode_progress)
+            completed_updates += 1
             timings.ppo_wall_s += time.monotonic() - update_started
             for name, stat in last_update_stats.items():
                 assert_finite(name, stat)
@@ -2051,6 +2094,7 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                         args,
                         completed_episode,
                         best_eval_metrics,
+                        completed_updates,
                     )
                     timings.checkpoint_wall_s += (
                         time.monotonic() - checkpoint_started
@@ -2080,6 +2124,7 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                 args,
                 completed_episode,
                 best_eval_metrics,
+                completed_updates,
             )
             timings.checkpoint_wall_s += time.monotonic() - checkpoint_started
             if wall_limit_reached or assigned_last_episode < block_end:
@@ -2087,9 +2132,9 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
 
         if sum(len(buffer) for buffer in buffers) > 0:
             update_started = time.monotonic()
-            apply_entropy_schedule(ppo, args, completed_episode)
+            apply_entropy_schedule(ppo, args, completed_updates)
             last_update_stats = ppo.train_buffers(buffers)
-            apply_entropy_schedule(ppo, args, completed_episode)
+            completed_updates += 1
             timings.ppo_wall_s += time.monotonic() - update_started
             for name, stat in last_update_stats.items():
                 assert_finite(name, stat)
@@ -2102,6 +2147,7 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
             args,
             completed_episode,
             best_eval_metrics,
+            completed_updates,
         )
         timings.checkpoint_wall_s += time.monotonic() - checkpoint_started
         if not best_model_path.exists():
@@ -2113,6 +2159,7 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                 args,
                 completed_episode,
                 best_eval_metrics,
+                completed_updates,
             )
     finally:
         group.close()
