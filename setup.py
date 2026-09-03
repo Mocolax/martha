@@ -33,6 +33,7 @@ setup(
             'ppo_train = martha.PPO.train:main',
             'ppo_evaluate = martha.PPO.evaluate:main',
             'ppo_plot = martha.PPO.analytics:main',
+            'ppo_benchmark = martha.PPO.benchmark:main',
             'ppo_policy = martha.PPO.policy_node:main',
         ],
     },

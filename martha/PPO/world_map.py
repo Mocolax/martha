@@ -10,6 +10,7 @@ geodesic potential for reward shaping.
 from __future__ import annotations
 
 from collections import deque
+import copy
 from dataclasses import dataclass
 import heapq
 import math
@@ -144,7 +145,7 @@ class WorldMap:
         obstacles: Iterable[Obstacle],
         model_xml: dict[str, str],
         resolution: float = 0.10,
-        robot_clearance: float = 0.35,
+        robot_clearance: float = 0.45,
     ):
         self.path = Path(path)
         self.world_name = world_name
@@ -206,7 +207,7 @@ class WorldMap:
         cls,
         path: str | Path,
         resolution: float = 0.10,
-        robot_clearance: float = 0.35,
+        robot_clearance: float = 0.45,
         bounds: tuple[float, float, float, float] = LOCAL_ARENA_BOUNDS,
     ) -> "WorldMap":
         path = Path(path).resolve()
@@ -276,6 +277,8 @@ class WorldMap:
 
     def translated(self, offset_x: float, offset_y: float) -> "WorldMap":
         """Return the same occupancy geometry translated into a shared world."""
+        if not math.isfinite(offset_x) or not math.isfinite(offset_y):
+            raise ValueError("world translation offsets must be finite")
         translated_obstacles: list[Obstacle] = []
         for obstacle in self.obstacles:
             if isinstance(obstacle, BoxObstacle):
@@ -298,21 +301,29 @@ class WorldMap:
                         radius=obstacle.radius,
                     )
                 )
+        # A rigid translation cannot change occupancy or connectivity. Rebuilding
+        # the float32 grid with ``np.arange`` at a different origin can move a
+        # boundary cell across an inflated obstacle by a few ulps. That made a
+        # catalog point valid in its local map but occupied in the shared map.
+        translated = copy.copy(self)
         min_x, max_x, min_y, max_y = self.bounds
-        return WorldMap(
-            path=self.path,
-            world_name=self.world_name,
-            bounds=(
-                min_x + offset_x,
-                max_x + offset_x,
-                min_y + offset_y,
-                max_y + offset_y,
-            ),
-            obstacles=translated_obstacles,
-            model_xml=self.model_xml,
-            resolution=self.resolution,
-            robot_clearance=self.robot_clearance,
+        translated.bounds = (
+            min_x + offset_x,
+            max_x + offset_x,
+            min_y + offset_y,
+            max_y + offset_y,
         )
+        translated.obstacles = tuple(translated_obstacles)
+        translated.x_coordinates = (
+            self.x_coordinates.astype(np.float64) + float(offset_x)
+        )
+        translated.y_coordinates = (
+            self.y_coordinates.astype(np.float64) + float(offset_y)
+        )
+        translated.free = self.free.copy()
+        translated.components = self.components.copy()
+        translated.component_sizes = dict(self.component_sizes)
+        return translated
 
     @property
     def scenario_model_names(self) -> tuple[str, ...]:
@@ -535,6 +546,66 @@ class WorldMap:
         if total_weight <= 0.0:
             return float(distance_field[index])
         return weighted_distance / total_weight
+
+    def geodesic_direction(
+        self,
+        x: float,
+        y: float,
+        distance_field: np.ndarray,
+        *,
+        lookahead: float | None = None,
+    ) -> tuple[float, float] | None:
+        """Return a unit world-frame direction descending the path field."""
+        index = self.grid_index(x, y)
+        if index is None or not self.free[index]:
+            return None
+        if distance_field.shape != self.free.shape:
+            raise ValueError("distance field shape does not match the map")
+        if lookahead is None:
+            lookahead = self.resolution
+        steps = max(1, int(math.ceil(float(lookahead) / self.resolution)))
+        row, column = index
+        rows, columns = self.free.shape
+        for _ in range(steps):
+            current_distance = float(distance_field[row, column])
+            best = (row, column)
+            best_distance = current_distance
+            for delta_row, delta_column in (
+                (-1, 0),
+                (1, 0),
+                (0, -1),
+                (0, 1),
+                (-1, -1),
+                (-1, 1),
+                (1, -1),
+                (1, 1),
+            ):
+                neighbor_row = row + delta_row
+                neighbor_column = column + delta_column
+                if not 0 <= neighbor_row < rows or not 0 <= neighbor_column < columns:
+                    continue
+                if not self.free[neighbor_row, neighbor_column]:
+                    continue
+                if delta_row and delta_column:
+                    if not self.free[row, neighbor_column]:
+                        continue
+                    if not self.free[neighbor_row, column]:
+                        continue
+                candidate = float(distance_field[neighbor_row, neighbor_column])
+                if candidate + 1e-9 < best_distance:
+                    best = (neighbor_row, neighbor_column)
+                    best_distance = candidate
+            if best == (row, column):
+                break
+            row, column = best
+        target_x = float(self.x_coordinates[column])
+        target_y = float(self.y_coordinates[row])
+        delta_x = target_x - float(x)
+        delta_y = target_y - float(y)
+        norm = math.hypot(delta_x, delta_y)
+        if norm <= 1e-6 or not math.isfinite(norm):
+            return None
+        return delta_x / norm, delta_y / norm
 
     def contains_safe_center(self, x: float, y: float) -> bool:
         """Return whether a pose center lies inside the inflated arena grid."""

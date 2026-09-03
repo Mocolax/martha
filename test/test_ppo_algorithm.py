@@ -13,6 +13,7 @@ torch = pytest.importorskip("torch")
 train_module = importlib.import_module("martha.PPO.train")
 evaluate_module = importlib.import_module("martha.PPO.evaluate")
 
+from martha.PPO.actions import ActionLimits  # noqa: E402
 from martha.PPO.buffer import RolloutBuffer  # noqa: E402
 from martha.PPO.analytics import _load_metrics, _values  # noqa: E402
 from martha.PPO.checkpoint import (  # noqa: E402
@@ -22,16 +23,21 @@ from martha.PPO.checkpoint import (  # noqa: E402
 from martha.PPO.logic import PPOLogic  # noqa: E402
 from martha.PPO.martha_env import (  # noqa: E402
     ACTION_SIZE,
-    LASER_SECTORS,
     OBSERVATION_SIZE,
-    POLICY_ARCHITECTURE,
     POLICY_CONTRACT_VERSION,
+    build_policy_contract,
 )
-from martha.PPO.network import ActorCritic  # noqa: E402
+from martha.PPO.network import (  # noqa: E402
+    ActorCritic,
+    NavigationFeatureExtractor,
+    OBSERVATION_ENCODER_MODE,
+    POLICY_ARCHITECTURE,
+    RECURRENT_HIDDEN_SIZE,
+    policy_architecture_for_mode,
+)
 from martha.PPO.observations import (  # noqa: E402
     OBSERVATION_FRAME_SIZE,
     OBSERVATION_HISTORY_FRAMES,
-    OBSERVATION_HISTORY_SECONDS,
 )
 from martha.PPO.reward import RewardConfig  # noqa: E402
 from martha.PPO.train import (  # noqa: E402
@@ -39,7 +45,9 @@ from martha.PPO.train import (  # noqa: E402
     METRIC_FIELDS,
     _cuda_rng_states_on_cpu,
     _evaluation_worlds,
+    _truncate_active_for_wall_limit,
     apply_entropy_schedule,
+    curriculum_max_goal_distance,
     entropy_coefficient_for_episode,
     _validate_resume_reward_scale,
     parse_args,
@@ -58,6 +66,60 @@ def _logic(gamma=0.90, lam=0.80):
         ppo_epochs=1,
         minibatch_size=2,
     )
+
+
+def test_feedforward_batch_normalizes_policy_gae_advantages():
+    logic = _logic()
+    batch_size = 3
+    advantages = torch.tensor([[-3.0], [1.0], [7.0]])
+
+    prepared = logic._prepare_batch(
+        torch.zeros((batch_size, OBSERVATION_SIZE)),
+        torch.zeros((batch_size, ACTION_SIZE)),
+        torch.zeros((batch_size, 1)),
+        advantages.clone(),
+        torch.zeros((batch_size, 1)),
+        torch.tensor([[1.0], [0.0], [1.0]]),
+    )
+
+    selected = advantages[torch.tensor([True, False, True])]
+    expected = (advantages - selected.mean()) / selected.std(unbiased=False)
+    torch.testing.assert_close(prepared[3], expected)
+
+
+def test_recurrent_batch_normalizes_valid_policy_gae_advantages():
+    logic = _logic()
+    network = logic.network
+    batch_size = 2
+    sequence_length = 3
+    advantages = torch.tensor(
+        [[[-4.0], [0.5], [8.0]], [[2.0], [-1.5], [6.0]]]
+    )
+
+    prepared = logic._prepare_recurrent_batch(
+        (
+            torch.zeros((batch_size, sequence_length, OBSERVATION_SIZE)),
+            torch.zeros((batch_size, sequence_length, ACTION_SIZE)),
+            torch.zeros((batch_size, sequence_length, 1)),
+            advantages.clone(),
+            torch.zeros((batch_size, sequence_length, 1)),
+            torch.tensor(
+                [[[1.0], [1.0], [0.0]], [[1.0], [0.0], [1.0]]]
+            ),
+            torch.zeros((batch_size, sequence_length, 1)),
+            torch.tensor(
+                [[[1.0], [1.0], [1.0]], [[1.0], [1.0], [0.0]]]
+            ),
+            network.initial_recurrent_state(batch_size),
+        )
+    )
+
+    policy_valid = torch.tensor(
+        [[[1.0], [1.0], [0.0]], [[1.0], [0.0], [0.0]]]
+    )
+    selected = advantages[policy_valid > 0.5]
+    expected = (advantages - selected.mean()) / selected.std(unbiased=False)
+    torch.testing.assert_close(prepared[3], expected)
 
 
 def test_single_gazebo_environment_is_always_trainer_managed(monkeypatch):
@@ -133,6 +195,7 @@ def test_rollout_buffer_preserves_terminal_and_episode_end_masks():
         next_value=0.0,
         terminated=True,
         episode_end=True,
+        policy_sample=False,
     )
 
     (
@@ -144,6 +207,7 @@ def test_rollout_buffer_preserves_terminal_and_episode_end_masks():
         next_values,
         terminateds,
         episode_ends,
+        policy_masks,
     ) = buffer.get_training_batch()
 
     assert len(buffer) == 2
@@ -156,15 +220,39 @@ def test_rollout_buffer_preserves_terminal_and_episode_end_masks():
         next_values,
         terminateds,
         episode_ends,
+        policy_masks,
     ):
         assert tensor.shape == (2, 1)
         assert torch.isfinite(tensor).all()
     torch.testing.assert_close(next_values[:, 0], torch.tensor([0.75, 0.0]))
     torch.testing.assert_close(terminateds[:, 0], torch.tensor([0.0, 1.0]))
     torch.testing.assert_close(episode_ends[:, 0], torch.tensor([1.0, 1.0]))
+    torch.testing.assert_close(policy_masks[:, 0], torch.tensor([1.0, 0.0]))
 
     buffer.clear()
     assert len(buffer) == 0
+
+
+def test_supervised_stop_samples_train_critic_but_are_masked_from_actor_loss():
+    logic = _logic()
+    states = torch.randn((2, OBSERVATION_SIZE))
+    actions = torch.zeros((2, ACTION_SIZE))
+    with torch.no_grad():
+        old_logprobs, _, values = logic.network.evaluate_actions(states, actions)
+    advantages = torch.ones((2, 1))
+    returns = values + advantages
+
+    losses = logic._loss_for_batch(
+        states,
+        actions,
+        old_logprobs,
+        advantages,
+        returns,
+        torch.tensor([[1.0], [0.0]]),
+    )
+
+    assert losses[1].item() == pytest.approx(-1.0)
+    assert losses[2].item() > 0.0
 
 
 def test_actor_critic_action_logprob_and_value_shapes_are_finite():
@@ -205,13 +293,196 @@ def test_actor_critic_vectorized_actions_preserve_environment_batch():
     assert torch.isfinite(values).all()
 
 
-def test_navigation_encoder_matches_the_multibranch_architecture():
-    extractor = ActorCritic().actor_feature_extractor
+def test_lstm_memory_advances_and_episode_start_resets_it():
+    torch.manual_seed(19)
+    network = ActorCritic()
+    observation = torch.randn(OBSERVATION_SIZE)
+    initial = network.initial_recurrent_state(1)
+
+    first_action, _, _, advanced = network.get_actions_recurrent(
+        observation,
+        initial,
+        episode_starts=[True],
+        deterministic=True,
+    )
+    second_action, _, _, _ = network.get_actions_recurrent(
+        observation,
+        advanced,
+        episode_starts=[False],
+        deterministic=True,
+    )
+    reset_action, _, _, reset_advanced = network.get_actions_recurrent(
+        observation,
+        advanced,
+        episode_starts=[True],
+        deterministic=True,
+    )
+
+    assert any(torch.count_nonzero(value) > 0 for value in advanced)
+    assert not torch.equal(second_action, first_action)
+    torch.testing.assert_close(reset_action, first_action)
+    for reset_value, first_value in zip(reset_advanced, advanced):
+        torch.testing.assert_close(reset_value, first_value)
+
+
+def test_batched_lstm_sequence_matches_stepwise_execution():
+    torch.manual_seed(29)
+    network = ActorCritic()
+    states = torch.randn((2, 5, OBSERVATION_SIZE))
+    starts = torch.zeros((2, 5, 1))
+    starts[:, 0] = 1.0
+    starts[1, 3] = 1.0
+    initial = network.initial_recurrent_state(2)
+
+    sequence_dist, sequence_values, sequence_end = (
+        network.forward_recurrent(states, initial, starts)
+    )
+    step_state = initial
+    step_means = []
+    step_values = []
+    for step in range(states.shape[1]):
+        dist, values, step_state = network.forward_recurrent(
+            states[:, step],
+            step_state,
+            starts[:, step:step + 1],
+        )
+        step_means.append(dist.mean)
+        step_values.append(values)
+
+    torch.testing.assert_close(
+        sequence_dist.mean,
+        torch.cat(step_means, dim=1),
+    )
+    torch.testing.assert_close(
+        sequence_values,
+        torch.cat(step_values, dim=1),
+    )
+    for sequence_value, step_value in zip(sequence_end, step_state):
+        torch.testing.assert_close(sequence_value, step_value)
+
+
+def test_recurrent_rollout_chunks_keep_resets_padding_and_initial_memory():
+    buffers = [RolloutBuffer(), RolloutBuffer()]
+    network = ActorCritic()
+    recurrent = network.initial_recurrent_state(1)
+    for step in range(3):
+        buffers[0].store(
+            state=np.full(OBSERVATION_SIZE, step, dtype=np.float32),
+            action=np.zeros(ACTION_SIZE, dtype=np.float32),
+            logprob=0.0,
+            reward=0.0,
+            value=0.0,
+            next_value=0.0,
+            terminated=False,
+            episode_end=step == 1,
+            recurrent_state=recurrent,
+        )
+    buffers[1].store(
+        state=np.zeros(OBSERVATION_SIZE, dtype=np.float32),
+        action=np.zeros(ACTION_SIZE, dtype=np.float32),
+        logprob=0.0,
+        reward=0.0,
+        value=0.0,
+        next_value=0.0,
+        terminated=False,
+        episode_end=False,
+        recurrent_state=recurrent,
+    )
+    logic = PPOLogic(
+        network,
+        ppo_epochs=1,
+        minibatch_size=4,
+        recurrent_sequence_length=4,
+    )
+
+    sequences = logic._recurrent_sequences(buffers)
+
+    assert sequences[0].shape == (2, 4, OBSERVATION_SIZE)
+    assert sequences[9].sum().item() == pytest.approx(4.0)
+    torch.testing.assert_close(
+        sequences[6][0, :, 0],
+        torch.tensor([1.0, 0.0, 1.0, 0.0]),
+    )
+    assert sequences[10].actor_h.shape == (
+        1,
+        2,
+        RECURRENT_HIDDEN_SIZE,
+    )
+
+
+def test_collected_recurrent_rollout_updates_lstm_parameters():
+    torch.manual_seed(31)
+    network = ActorCritic()
+    logic = PPOLogic(
+        network,
+        lr=1e-3,
+        ppo_epochs=1,
+        minibatch_size=8,
+        recurrent_sequence_length=4,
+    )
+    buffer = RolloutBuffer()
+    recurrent = network.initial_recurrent_state(1)
+    observations = torch.randn((9, OBSERVATION_SIZE))
+    for step in range(8):
+        transition_state = recurrent
+        action, logprob, value, recurrent = network.get_actions_recurrent(
+            observations[step],
+            recurrent,
+            episode_starts=[step == 0],
+        )
+        terminal = step == 7
+        next_value = (
+            torch.zeros((1, 1))
+            if terminal
+            else network.get_value_recurrent(
+                observations[step + 1],
+                recurrent,
+            )
+        )
+        buffer.store(
+            state=observations[step],
+            action=action,
+            logprob=logprob,
+            reward=float(step % 3) - 0.5,
+            value=value,
+            next_value=next_value,
+            terminated=terminal,
+            episode_end=terminal,
+            recurrent_state=transition_state,
+            episode_start=step == 0,
+        )
+    before = {
+        name: parameter.detach().clone()
+        for name, parameter in network.actor_lstm.named_parameters()
+    }
+
+    stats = logic.train_buffer(buffer)
+
+    assert stats["updates"] == 1
+    assert all(math.isfinite(float(value)) for value in stats.values())
+    assert any(
+        not torch.equal(before[name], parameter.detach())
+        for name, parameter in network.actor_lstm.named_parameters()
+    )
+    assert len(buffer) == 0
+
+
+@pytest.mark.parametrize(
+    ("mode", "encoded_frames"),
+    (("present", 1), ("history", OBSERVATION_HISTORY_FRAMES)),
+)
+def test_navigation_encoder_modes_change_temporal_input_shape(
+    mode,
+    encoded_frames,
+):
+    extractor = NavigationFeatureExtractor(mode)
     first_convolution = extractor.laser_branch[0]
     second_convolution = extractor.laser_branch[2]
     laser_linear = extractor.laser_branch[5]
 
-    assert first_convolution.in_channels == 4
+    assert extractor.observation_encoder_mode == mode
+    assert extractor.encoded_frame_count == encoded_frames
+    assert first_convolution.in_channels == encoded_frames
     assert first_convolution.out_channels == 16
     assert first_convolution.kernel_size == (6,)
     assert first_convolution.stride == (3,)
@@ -221,14 +492,53 @@ def test_navigation_encoder_matches_the_multibranch_architecture():
     assert second_convolution.stride == (2,)
     assert laser_linear.in_features == 128
     assert laser_linear.out_features == 256
-    assert extractor.orientation_branch[0].in_features == 8
+    assert extractor.orientation_branch[0].in_features == encoded_frames * 2
     assert extractor.orientation_branch[0].out_features == 32
-    assert extractor.distance_branch[0].in_features == 4
+    assert extractor.distance_branch[0].in_features == encoded_frames
     assert extractor.distance_branch[0].out_features == 16
-    assert extractor.velocity_branch[0].in_features == 12
+    assert extractor.velocity_branch[0].in_features == encoded_frames * 3
     assert extractor.velocity_branch[0].out_features == 32
     assert extractor.fusion[0].in_features == 336
     assert extractor.fusion[0].out_features == 384
+
+
+def test_present_encoder_ignores_the_three_older_frames():
+    extractor = NavigationFeatureExtractor("present").eval()
+    observations = torch.randn((2, OBSERVATION_SIZE))
+    frames = observations.reshape(
+        2,
+        OBSERVATION_HISTORY_FRAMES,
+        OBSERVATION_FRAME_SIZE,
+    )
+    frames[1, -1] = frames[0, -1]
+
+    torch.testing.assert_close(
+        extractor(observations)[0],
+        extractor(observations)[1],
+    )
+
+
+def test_present_encoder_has_fewer_parameters_than_history_encoder():
+    present = NavigationFeatureExtractor("present")
+    history = NavigationFeatureExtractor("history")
+
+    present_parameters = sum(
+        parameter.numel() for parameter in present.parameters()
+    )
+    history_parameters = sum(
+        parameter.numel() for parameter in history.parameters()
+    )
+
+    assert present_parameters < history_parameters
+
+
+def test_default_network_architecture_matches_the_editable_mode():
+    network = ActorCritic()
+
+    assert network.observation_encoder_mode == OBSERVATION_ENCODER_MODE
+    assert POLICY_ARCHITECTURE == policy_architecture_for_mode(
+        OBSERVATION_ENCODER_MODE
+    )
 
 
 def test_actor_and_critic_have_disjoint_parameters_and_gradients():
@@ -274,7 +584,18 @@ def test_periodic_evaluation_uses_editable_training_defaults():
     assert args.eval_episodes == TRAINING_DEFAULTS.eval_episodes
     assert args.eval_max_steps == TRAINING_DEFAULTS.eval_max_steps
     assert args.reward_scale == pytest.approx(TRAINING_DEFAULTS.reward_scale)
-    assert _evaluation_worlds(environment, args) == [0, 2, 5]
+    assert args.physics_step_size == pytest.approx(0.002)
+    assert args.lidar_samples == 180
+    assert args.training_kinematic is True
+    assert args.map_batch_episodes == TRAINING_DEFAULTS.map_batch_episodes
+    assert args.max_wall_time_hours == pytest.approx(24.0)
+    assert args.eval_every == TRAINING_DEFAULTS.eval_every
+    assert args.eval_episodes == TRAINING_DEFAULTS.eval_episodes
+    assert args.max_vx == pytest.approx(TRAINING_DEFAULTS.max_vx)
+    assert args.max_vy == pytest.approx(TRAINING_DEFAULTS.max_vy)
+    assert args.max_wz == pytest.approx(TRAINING_DEFAULTS.max_wz)
+    assert args.max_action_delta == pytest.approx(0.35)
+    assert _evaluation_worlds(environment, args) == list(range(6))
 
     args.eval_map_count = 0
     assert _evaluation_worlds(environment, args) == list(range(6))
@@ -313,6 +634,7 @@ def test_training_metrics_reject_an_old_csv_schema(tmp_path):
 
 def test_paper_reward_metrics_and_legacy_component_reports_are_compatible(tmp_path):
     assert {
+        "reward_step",
         "reward_distance",
         "reward_orientation",
         "reward_shortest_distance",
@@ -337,13 +659,23 @@ def test_reward_config_is_restored_from_checkpoint_and_legacy_uses_defaults():
     assert train_module.reward_config_from_checkpoint({"config": {}}) == RewardConfig()
 
 
+def test_resume_rejects_checkpoint_from_previous_reward_schema():
+    saved = vars(RewardConfig()).copy()
+    saved.pop("timeout_penalty")
+
+    with pytest.raises(ValueError, match="start a new run"):
+        train_module.reward_config_from_checkpoint(
+            {"config": {"reward_config": saved}}
+        )
+
+
 def test_checkpoint_configuration_serializes_the_active_reward_config():
     reward_config = RewardConfig(wiggle_window_steps=7)
     environment = SimpleNamespace(
         observation_space=SimpleNamespace(shape=(OBSERVATION_SIZE,)),
         action_space=SimpleNamespace(shape=(3,)),
         policy_contract={"scan_range_max": 8.0},
-        max_goal_distance=12.0,
+        goal_distance_scale=3.0,
         action_limits=SimpleNamespace(
             max_vx=0.35,
             max_vy=0.35,
@@ -399,11 +731,16 @@ def test_entropy_schedule_updates_the_live_ppo_weight():
         episodes=2000,
         entropy_exploration_fraction=0.60,
         entropy_decay_fraction=0.30,
+        policy_std_initial=0.40,
+        policy_std_final=0.15,
     )
 
     apply_entropy_schedule(logic, args, 1500)
 
     assert logic.entropy_coef == pytest.approx(0.001)
+    assert torch.exp(logic.network.actor_logstd).max().item() == pytest.approx(
+        0.275
+    )
 
 
 def test_resume_requires_the_checkpoint_reward_scale():
@@ -484,6 +821,79 @@ def test_training_map_index_override_disables_block_rotation():
 
     assert training_world_index(args, 6, 1) == 4
     assert training_world_index(args, 6, 200) == 4
+
+
+def test_navigation_curriculum_balances_maps_and_expands_route_distances():
+    args = SimpleNamespace(
+        backend="gazebo",
+        map_index=None,
+        map_batch_episodes=12,
+        seed=42,
+        episodes=8000,
+        curriculum_enabled=True,
+        curriculum_easy_fraction=0.40,
+        curriculum_medium_fraction=0.60,
+        curriculum_full_fraction=0.85,
+        curriculum_easy_max_distance=6.0,
+        curriculum_medium_max_distance=10.0,
+        curriculum_hard_max_distance=18.0,
+    )
+
+    early_worlds = {
+        training_world_index(args, 6, episode)
+        for episode in range(1, 73, 12)
+    }
+    assert early_worlds == set(range(6))
+    assert curriculum_max_goal_distance(args, 1) == pytest.approx(6.0)
+    assert curriculum_max_goal_distance(args, 3201) == pytest.approx(10.0)
+    assert curriculum_max_goal_distance(args, 4801) == pytest.approx(18.0)
+    assert curriculum_max_goal_distance(args, 6801) is None
+
+
+def test_training_map_batch_size_enables_recycling_without_scheduler_state():
+    args = SimpleNamespace(
+        backend="gazebo",
+        map_index=None,
+        num_envs=4,
+        map_batch_episodes=24,
+        seed=42,
+    )
+
+    first = training_world_index(args, 6, 1)
+    second = training_world_index(args, 6, 25)
+
+    assert all(training_world_index(args, 6, episode) == first for episode in range(1, 25))
+    assert second != first
+
+
+def test_hard_wall_limit_marks_active_buffers_as_bootstrapped_truncations():
+    buffers = [RolloutBuffer(), RolloutBuffer()]
+    for buffer in buffers:
+        buffer.store(
+            state=np.zeros(OBSERVATION_SIZE),
+            action=np.zeros(ACTION_SIZE),
+            logprob=0.0,
+            reward=0.0,
+            value=0.0,
+            next_value=0.5,
+            terminated=False,
+            episode_end=False,
+        )
+    active = {
+        index: {
+            "episode": index + 1,
+            "last_info": {"position": (0.0, 0.0, 0.0)},
+        }
+        for index in range(2)
+    }
+
+    finished = _truncate_active_for_wall_limit(active, buffers)
+
+    assert active == {}
+    assert set(finished) == {0, 1}
+    assert all(state["truncated"] for state in finished.values())
+    assert all(state["info"]["wall_time_limit"] for state in finished.values())
+    assert all(buffer.episode_ends[-1] == 1.0 for buffer in buffers)
 
 
 def test_tiny_ppo_update_is_finite_and_changes_parameters():
@@ -585,25 +995,18 @@ def test_state_dict_round_trip_preserves_deterministic_policy(tmp_path):
 
 def test_checkpoint_requires_the_canonical_policy_contract(tmp_path):
     network = ActorCritic()
-    contract = {
-        "version": POLICY_CONTRACT_VERSION,
-        "observation_size": OBSERVATION_SIZE,
-        "action_size": ACTION_SIZE,
-        "laser_sectors": LASER_SECTORS,
-        "architecture": POLICY_ARCHITECTURE,
-        "observation_layout": "frame_major",
-        "observation_frame_size": OBSERVATION_FRAME_SIZE,
-        "observation_history_frames": OBSERVATION_HISTORY_FRAMES,
-        "observation_history_seconds": OBSERVATION_HISTORY_SECONDS,
-        "scan_range_max": 8.0,
-        "max_goal_distance": 12.0,
-        "action_limits": {
-            "max_vx": 0.35,
-            "max_vy": 0.35,
-            "max_wz": 0.80,
-            "max_action_delta": 0.35,
-        },
-    }
+    contract = build_policy_contract(
+        scan_range_max=8.0,
+        goal_distance_scale=3.0,
+        action_limits=ActionLimits(
+            max_vx=0.35,
+            max_vy=0.35,
+            max_wz=0.80,
+            max_action_delta=0.35,
+        ),
+    )
+    assert contract["recurrent_hidden_size"] == RECURRENT_HIDDEN_SIZE
+    assert contract["recurrent_hidden_size"] == network.actor_lstm.hidden_size
     checkpoint = {
         "model_state_dict": network.state_dict(),
         "policy_contract": contract,
@@ -622,8 +1025,25 @@ def test_checkpoint_requires_the_canonical_policy_contract(tmp_path):
     assert loaded["policy_contract"] == contract
     assert limits.max_vx == pytest.approx(0.35)
     first_convolution = restored.actor_feature_extractor.laser_branch[0]
-    assert first_convolution.in_channels == OBSERVATION_HISTORY_FRAMES
+    assert first_convolution.in_channels == (
+        restored.actor_feature_extractor.encoded_frame_count
+    )
     assert first_convolution.kernel_size == (6,)
+    assert restored.actor_lstm.hidden_size == RECURRENT_HIDDEN_SIZE
+    incompatible_contract = dict(contract)
+    incompatible_mode = (
+        "history" if OBSERVATION_ENCODER_MODE == "present" else "present"
+    )
+    incompatible_contract["architecture"] = policy_architecture_for_mode(
+        incompatible_mode
+    )
+    with pytest.raises(ValueError, match="architecture mismatch"):
+        validate_checkpoint(
+            {
+                **checkpoint,
+                "policy_contract": incompatible_contract,
+            }
+        )
     with pytest.raises(ValueError, match="missing policy_contract"):
         validate_checkpoint(
             {

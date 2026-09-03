@@ -101,7 +101,7 @@ rechaza ambos argumentos si terminan apuntando al mismo dispositivo. Para usar
 un driver iniciado externamente, añade `start_lidar:=false`.
 
 El URDF sitúa el plano del LiDAR al frente y centrado, aproximadamente a
-`x=0.255 m` de `base_link`. El montaje físico debe respetar esa posición; si
+`x=0.2325 m` de `base_link`. El montaje físico debe respetar esa posición; si
 cambia, deben actualizarse juntos el URDF y el offset usado por la protección
 de huella PPO.
 
@@ -147,11 +147,16 @@ hay generación automática: mientras una sección tenga menos de ocho puntos
 válidos, `ppo_train` termina indicando el mapa problemático.
 
 La observación contiene cuatro frames distribuidos durante un segundo de tiempo
-ROS. Cada frame reúne 36 sectores LiDAR, distancia normalizada, seno/coseno del
-rumbo y velocidad odométrica `[Vx, Vy, W]`; el vector completo tiene 168
-valores. No expone ground truth a la política; Gazebo ground truth solo se usa
-para meta, salida del mapa y métricas. La recompensa combina avance,
-penalización por paso, esfuerzo, cambios bruscos, proximidad, colisión y llegada.
+ROS. Cada frame reúne 36 sectores LiDAR, distancia normalizada y seno/coseno del
+rumbo hacia un waypoint local, además de velocidad odométrica `[Vx, Vy, W]`; el
+vector completo tiene 168 valores. La distancia se codifica sin recorte como
+`d / (d + 3 m)`. En Gazebo, el planificador privilegiado usa el mapa y la pose
+real para actualizar un waypoint geodésico a 0.50 m; la política solo recibe
+sus tres características relativas, no el mapa ni las coordenadas globales.
+La llegada y las métricas siguen midiéndose contra la meta final. En el robot
+real, un planificador global con localización debe producir el mismo waypoint.
+La recompensa combina avance, penalización por paso, esfuerzo, cambios bruscos,
+proximidad, colisión y llegada.
 
 Cada robot publica contactos de su huella elevada en
 `/martha_N/contacts` mediante `libgazebo_ros_bumper.so`. Los contactos con
@@ -163,10 +168,19 @@ La cantidad original de puntos de `/scan` no cambia el tamaño del modelo: los
 scans de densidad variable del A2M8 se agrupan angularmente por mínimo en los
 mismos 36 sectores y se limitan al alcance común de 8 m.
 
-El actor y el crítico tienen extractores multirrama independientes. Cada uno
-procesa los cuatro LiDAR con dos convoluciones 1D, codifica distancia,
-orientación y velocidad en ramas densas, y fusiona las representaciones en 384
-unidades. Sus gradientes se recortan por separado. La recompensa guardada en el
+El actor y el crítico tienen extractores multirrama independientes. La variable
+`OBSERVATION_ENCODER_MODE` de `martha/PPO/network.py` selecciona `"present"`
+(solo el frame más reciente) o `"history"` (los cuatro frames) como entrada de
+las ramas de LiDAR, distancia, orientación y velocidad. El modo normal es
+`"present"`; el entorno conserva el vector canónico de 168 valores, pero el
+extractor ignora los tres frames antiguos y deja la temporalidad al LSTM. Las
+ramas se fusionan en 384 unidades y luego el actor y el crítico usan su propia
+LSTM de 128 unidades. Cambiar el modo exige entrenar un checkpoint nuevo.
+Cada robot conserva memoria recurrente independiente; se borra al iniciar un
+episodio, cambiar de meta, llegar o entrar en fault. PPO entrena fragmentos
+ordenados de 32 pasos con máscaras de padding y de fin de episodio, sin barajar
+transiciones temporales aisladas. Sus gradientes se recortan por separado. La
+recompensa guardada en el
 buffer se multiplica por `reward_scale` (`0.01` por defecto), pero
 `episode_reward` conserva la recompensa original y `episode_scaled_reward`
 registra el valor usado por PPO.
@@ -202,12 +216,13 @@ record = 0.05 * (mejor_distancia_del_episodio - distancia_actual)
 laser = -0.01 * (0.65 - minimo_laser), solo bajo 0.65 m
 zigzag = -0.01, si hay más de 3 reversos directos izquierda-derecha
           durante las últimas 10 acciones
-reward = distancia + orientacion + record + laser + zigzag
+reward = costo_temporal + distancia + orientacion + record + laser + zigzag
 ```
 
 La distancia para recompensa es euclídea; la distancia geodésica de Gazebo se
-mantiene únicamente para SPL y las métricas de ruta. Los finales son exclusivos:
-meta `+1.0`, colisión/motor fault/fuera del mapa `-0.75` y timeout `0.0`.
+mantiene únicamente para SPL y las métricas de ruta. Cada transición no terminal
+aplica un costo temporal de `-0.0002`. Los finales son exclusivos: meta `+1.0`,
+colisión/motor fault/fuera del mapa `-0.75` y timeout `-0.5`.
 Una colisión conserva prioridad sobre una señal simultánea de meta. El zigzag
 usa la velocidad angular aplicada: izquierda por encima de `+0.2 rad/s`,
 derecha por debajo de `-0.2 rad/s`; una acción recta corta la secuencia. Esos
@@ -217,11 +232,12 @@ evaluar uno antiguo se usan los valores actuales y aparece una advertencia.
 
 El entrenamiento siempre administra su propia instancia de Gazebo. No
 inicies `simulation.launch.py` antes de `ppo_train`, ni siquiera cuando
-`num_envs=1`. El factor `TrainingDefaults.sim_speed_factor` acepta valores
-mayores que cero hasta `20.0`. Se recomienda probar primero `2.0` y luego
-`4.0`. No cambia el paso fisico de 1 ms ni el LiDAR de 10 Hz en tiempo
-simulado: solo intenta ejecutar esos segundos simulados mas rapido que el reloj
-de pared.
+`num_envs=1`. El perfil PPO usa por defecto un paso físico de 2 ms, 180 rayos
+LiDAR reducidos a los mismos 36 sectores y cinemática planar. La simulación
+normal conserva por defecto el modelo detallado de 48 rodillos por robot, el
+paso de 1 ms y 360 rayos. Por tanto, el contrato de observación y los tópicos
+ROS son comunes, pero el backend de entrenamiento evita simular articulaciones
+que no aportan información a la política.
 
 Si el factor supera la capacidad del equipo, Gazebo simplemente no alcanzara
 la velocidad solicitada y pueden aparecer jitter, colas de mensajes o
@@ -236,20 +252,44 @@ source install/setup.bash
 ros2 run martha ppo_train
 ```
 
-`TrainingDefaults.num_envs=8` significa cantidad de robots, no cantidad de
+`TrainingDefaults.num_envs=4` significa cantidad de robots, no cantidad de
 servidores. En cada paso vectorizado el coordinador publica todas las acciones,
 reanuda la física una vez, recibe sensores/contactos frescos y la pausa una
-vez. El único log de simulación queda en `<run>/gazebo.log`. Con
-`gazebo_gui=True`, una ventana muestra las seis arenas y los ocho robots.
+vez. Cuando uno termina, su plaza se recicla en el mismo mapa; el intervalo de
+asentamiento se registra como transición de parada para los robots activos y
+queda enmascarado del loss del actor, aunque sí entrena al crítico. El único log
+de simulación queda en `<run>/gazebo.log`. Con `gazebo_gui=True`, una ventana
+muestra las seis arenas y la flota.
 El arranque es secuencial para evitar carreras de Gazebo y puede tardar varios
 minutos con los modelos detallados; `gazebo_startup_timeout` vale 240 s.
 
-Las evaluaciones periódicas esperan el final de una ronda. Siete robots quedan
+Las evaluaciones periódicas esperan el final de un bloque. Los demás robots quedan
 aparcados y `martha_0` evalúa la política dentro del mismo `gzserver`. Cambia
-`eval_every`, `eval_map_count`, `num_envs` y `sim_speed_factor` en
+`eval_every`, `eval_map_count`, `num_envs`, `map_batch_episodes` y
+`sim_speed_factor` en
 `TrainingDefaults`; `eval_every=0` desactiva la evaluación periódica. En
 entrenamiento no abras otro `simulation.launch.py`: el coordinador es dueño de
 la única simulación.
+
+Cada intento deja de asignar episodios 30 minutos antes del límite de 24 horas,
+drena los episodios activos y guarda un checkpoint. Si alcanza el límite duro,
+los episodios restantes se cierran como truncamientos con bootstrap. El CSV
+incluye tiempo acumulado de física, reset, PPO, evaluación y checkpoint, además
+de `training_steps_per_second`.
+
+Cuando no haya un entrenamiento activo, compara 1, 2 y 4 robots con una carga
+fija y sin actualizar la política:
+
+```bash
+ros2 run martha ppo_benchmark
+```
+
+El benchmark se niega a competir por recursos si detecta `ppo_train` activo.
+Para validar ademas el reciclaje de un robot mientras sus pares siguen activos:
+
+```bash
+ros2 run martha ppo_benchmark --robot-counts 4 --steps 40 --recycle-smoke
+```
 
 Los resultados quedan por defecto en
 `~/ros2_ws/src/martha/martha/PPO/ppo_runs/<run>/`: `metrics.csv`,
@@ -269,7 +309,10 @@ ros2 run martha ppo_train \
 ```
 
 Antes de reanudar, establece en `TrainingDefaults.episodes` el episodio final
-deseado. El CSV del run debe usar el esquema actual.
+deseado. El CSV del run debe usar el esquema actual. La arquitectura LSTM usa
+el contrato de política versión 5; los checkpoints feed-forward anteriores se
+rechazan explícitamente y requieren comenzar un run nuevo o una transferencia
+de pesos diseñada por separado.
 
 Si el entrenamiento fue interrumpido o quieres volver a graficar un run
 anterior, el siguiente comando usa el run modificado más recientemente:
@@ -287,7 +330,7 @@ ros2 run martha ppo_plot /ruta/ppo_runs/ppo_martha_YYYYMMDD_HHMMSS
 La ventana de la media móvil se cambia en `REPORT_WINDOW`, al principio de
 `martha/PPO/analytics.py`. Los runs nuevos guardan además la contribución
 acumulada de cada término de `RewardConfig`, para identificar si dominan el
-progreso, el costo por step, el clearance o las recompensas terminales.
+progreso, el costo temporal, el zigzag, el clearance o las recompensas terminales.
 
 La exploración PPO también tiene tres fases configurables en `TrainingDefaults`:
 `entropy_coef` se mantiene durante `entropy_exploration_fraction` (60 % por
@@ -299,9 +342,15 @@ estándar cuando sus ventajas lo indiquen. El estado de la fase depende del
 progreso relativo de los episodios, por lo que la misma configuración conserva
 la fase al reanudar un checkpoint.
 
-Evaluación determinista en los nueve escenarios:
+Evaluación determinista en los seis escenarios (requiere la simulación normal
+ya iniciada en otra terminal):
 
 ```bash
+ros2 launch martha simulation.launch.py gui:=false \
+  sim_speed_factor:=5.0 physics_step_size:=0.002 \
+  training_kinematic:=true lidar_samples:=180 lidar_visualize:=false
+
+# En otra terminal, con el mismo workspace cargado:
 ros2 run martha ppo_evaluate \
   --checkpoint /ruta/ppo_runs/run/best_model.pt
 ```
@@ -311,8 +360,11 @@ principio de `martha/PPO/evaluate.py`.
 
 ## Ejecutar una política entrenada
 
-El mismo launch sirve para ambos backends y la política permanece detenida
-hasta recibir una meta desde la herramienta **2D Goal Pose** de RViz:
+El mismo launch sirve para ambos backends. Este checkpoint es un controlador
+local: `/goal_pose` debe contener un waypoint aproximadamente 0.50 m por delante
+sobre una ruta global, no la meta final seleccionada directamente con
+**2D Goal Pose**. El planificador debe actualizarlo antes de que quede a 0.25 m;
+las actualizaciones durante una navegación conservan la memoria LSTM.
 
 ```bash
 # Gazebo

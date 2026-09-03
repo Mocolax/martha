@@ -36,8 +36,8 @@ from .reward import RewardConfig
 @dataclass(frozen=True)
 class EvaluationDefaults:
     checkpoint: Path | None = None
-    episodes: int = 1
-    max_steps: int = 300
+    episodes: int = 5
+    max_steps: int = 800
     map_index: int | None = None
     backend: str = "gazebo"
     goal: tuple[float, float] | None = None
@@ -61,6 +61,7 @@ RESULT_FIELDS = [
     "reached_goal",
     "collision",
     "out_of_bounds",
+    "stagnated",
     "path_length",
     "shortest_path",
     "spl",
@@ -148,7 +149,7 @@ def make_environment(
         scan_range_max=float(contract["scan_range_max"]),
         max_steps=args.max_steps,
         goal_tolerance=float(config["goal_tolerance"]),
-        max_goal_distance=float(contract["max_goal_distance"]),
+        goal_distance_scale=float(contract["goal_distance_scale"]),
         min_goal_distance=float(config["min_goal_distance"]),
         action_limits=action_limits,
         reward_config=reward_config,
@@ -237,8 +238,17 @@ def evaluate_episode(
     truncated = False
     info: dict[str, Any] = {}
     steps = 0
+    recurrent_state = network.initial_recurrent_state(1)
+    episode_start = True
     for steps in range(1, args.max_steps + 1):
-        action, _, _ = network.get_action(observation, deterministic=True)
+        action, _, _, recurrent_state = network.get_actions_recurrent(
+            observation,
+            recurrent_state,
+            episode_starts=[episode_start],
+            deterministic=True,
+        )
+        action = action.squeeze(0)
+        episode_start = False
         action_array = action.numpy().astype(np.float32)
         assert_finite("evaluation action", action_array)
         (
@@ -268,6 +278,7 @@ def evaluate_episode(
         "reached_goal": int(success),
         "collision": int(bool(info.get("collision", False))),
         "out_of_bounds": int(bool(info.get("out_of_bounds", False))),
+        "stagnated": int(bool(info.get("stagnated", False))),
         "path_length": path_length,
         "shortest_path": shortest_path,
         "spl": calculate_spl(success, shortest_path, path_length),

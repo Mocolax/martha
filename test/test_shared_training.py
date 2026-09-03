@@ -16,6 +16,7 @@ from martha.PPO.training_layout import (
     WORLD_ORIGINS,
     TrainingPoint,
     create_combined_training_world,
+    create_training_points_visualization_world,
     load_training_points,
     parking_pose,
     sample_round_episodes,
@@ -58,6 +59,14 @@ def _actual_maps():
     )
 
 
+@pytest.mark.parametrize("world_path", discover_worlds(WORLDS_DIRECTORY))
+def test_shipped_worlds_do_not_embed_saved_runtime_state(world_path):
+    world = ET.parse(world_path).getroot().find("world")
+
+    assert world is not None
+    assert world.find("state") is None
+
+
 def test_catalog_loader_rejects_missing_worlds_and_duplicate_ids(tmp_path):
     incomplete = tmp_path / "incomplete.yaml"
     incomplete.write_text("worlds:\n  room:\n    points: []\n", encoding="utf-8")
@@ -81,17 +90,58 @@ def test_catalog_loader_rejects_missing_worlds_and_duplicate_ids(tmp_path):
         load_training_points(duplicate)
 
 
-def test_empty_shipped_catalog_fails_before_gazebo_with_world_name():
+def test_shipped_catalog_validates_against_actual_worlds():
     maps = _actual_maps()
     catalog = load_training_points(PROJECT_ROOT / "config/training_points.yaml")
 
-    with pytest.raises(ValueError, match="world four_rooms needs at least 8"):
-        validate_training_points(
-            catalog,
-            maps,
-            robot_count=8,
-            min_goal_distance=2.0,
-        )
+    validate_training_points(
+        catalog,
+        maps,
+        robot_count=8,
+        min_goal_distance=2.0,
+    )
+
+
+def test_translated_maps_preserve_catalog_occupancy_and_connectivity():
+    maps = _actual_maps()
+    catalog = load_training_points(PROJECT_ROOT / "config/training_points.yaml")
+
+    for world in maps:
+        offset_x, offset_y = WORLD_ORIGINS[world.world_name]
+        translated = world.translated(offset_x, offset_y)
+
+        np.testing.assert_array_equal(translated.free, world.free)
+        np.testing.assert_array_equal(translated.components, world.components)
+        for point in catalog[world.world_name]:
+            local_index = world.grid_index(point.x, point.y)
+            shared_index = translated.grid_index(
+                point.x + offset_x,
+                point.y + offset_y,
+            )
+            assert shared_index == local_index
+            assert translated.is_free_pose(
+                point.x + offset_x,
+                point.y + offset_y,
+            ) == world.is_free_pose(point.x, point.y)
+
+    # Episode 109 used this pair in ``multi``. Before the topology-preserving
+    # translation, float32 re-rasterization marked its start as occupied.
+    multi = next(world for world in maps if world.world_name == "multi")
+    offset_x, offset_y = WORLD_ORIGINS["multi"]
+    translated_multi = multi.translated(offset_x, offset_y)
+    local_distance = multi.path_distance(
+        1.0,
+        2.0,
+        multi.distance_field(4.0, 1.5),
+    )
+    shared_distance = translated_multi.path_distance(
+        1.0 + offset_x,
+        2.0 + offset_y,
+        translated_multi.distance_field(4.0 + offset_x, 1.5 + offset_y),
+    )
+
+    assert np.isfinite(local_distance)
+    assert shared_distance == pytest.approx(local_distance)
 
 
 def test_catalog_validation_and_sampling_use_unique_starts_and_distinct_goals():
@@ -135,6 +185,25 @@ def test_catalog_validation_and_sampling_use_unique_starts_and_distinct_goals():
             ) >= MIN_START_SEPARATION
 
 
+@pytest.mark.parametrize("world_name", TRAINING_WORLD_NAMES)
+def test_easy_curriculum_sampling_limits_every_world_route_length(world_name):
+    world = WorldMap.from_sdf(WORLDS_DIRECTORY / f"{world_name}.world")
+    catalog = load_training_points(PROJECT_ROOT / "config/training_points.yaml")
+
+    episodes = sample_round_episodes(
+        world,
+        catalog[world_name],
+        WORLD_ORIGINS[world_name],
+        robot_count=4,
+        min_goal_distance=2.0,
+        max_goal_distance=6.0,
+        rng=np.random.default_rng(42),
+    )
+
+    assert len(episodes) == 4
+    assert all(2.0 <= episode.shortest_path <= 6.0 for episode in episodes)
+
+
 def test_combined_world_has_six_offset_islands_and_unique_model_names(tmp_path):
     world_paths = discover_worlds(WORLDS_DIRECTORY)
     combined_path = create_combined_training_world(
@@ -149,6 +218,91 @@ def test_combined_world_has_six_offset_islands_and_unique_model_names(tmp_path):
     for world_name in TRAINING_WORLD_NAMES:
         assert any(name.startswith(f"{world_name}__") for name in names)
     assert world.find("plugin[@filename='libgazebo_ros_state.so']") is not None
+
+
+def test_training_point_visualization_marks_the_complete_catalog(tmp_path):
+    world_paths = discover_worlds(WORLDS_DIRECTORY)
+    catalog = load_training_points(PROJECT_ROOT / "config/training_points.yaml")
+    visualization_path = create_training_points_visualization_world(
+        world_paths,
+        catalog,
+        directory=tmp_path,
+    )
+    world = ET.parse(visualization_path).getroot().find("world")
+    assert world is not None
+
+    markers = {
+        model.get("name"): model
+        for model in world.findall("model")
+        if (model.get("name") or "").startswith("training_point__")
+    }
+    assert len(markers) == sum(len(points) for points in catalog.values())
+
+    for world_name in TRAINING_WORLD_NAMES:
+        offset_x, offset_y = WORLD_ORIGINS[world_name]
+        for index, point in enumerate(catalog[world_name], start=1):
+            name = f"training_point__{world_name}__{index:02d}__{point.point_id}"
+            marker = markers[name]
+            pose = [float(value) for value in marker.findtext("pose").split()]
+            assert pose[:3] == pytest.approx(
+                [point.x + offset_x, point.y + offset_y, 0.6]
+            )
+            assert marker.findtext("static") == "true"
+            assert marker.find(".//collision") is None
+            assert marker.findtext(".//cylinder/radius") == "0.16"
+
+    camera = world.find("gui/camera[@name='training_points_camera']")
+    assert camera is not None
+    assert camera.findtext("view_controller") == "orbit"
+
+
+@pytest.mark.parametrize("world_name", TRAINING_WORLD_NAMES)
+def test_training_point_visualization_can_select_one_local_map(
+    tmp_path,
+    world_name,
+):
+    world_paths = discover_worlds(WORLDS_DIRECTORY)
+    catalog = load_training_points(PROJECT_ROOT / "config/training_points.yaml")
+    visualization_path = create_training_points_visualization_world(
+        world_paths,
+        catalog,
+        selected_world=world_name,
+        directory=tmp_path,
+    )
+    world = ET.parse(visualization_path).getroot().find("world")
+    assert world is not None
+    assert world.get("name") == f"{world_name}_training_points"
+
+    markers = [
+        model
+        for model in world.findall("model")
+        if (model.get("name") or "").startswith("training_point__")
+    ]
+    assert len(markers) == len(catalog[world_name])
+    assert all(
+        marker.get("name").startswith(f"training_point__{world_name}__")
+        for marker in markers
+    )
+    for marker, point in zip(markers, catalog[world_name]):
+        pose = [float(value) for value in marker.findtext("pose").split()]
+        assert pose[:3] == pytest.approx([point.x, point.y, 0.6])
+
+    assert world.find("state") is None
+    camera_pose = [
+        float(value)
+        for value in world.findtext("gui/camera[@name='training_points_camera']/pose").split()
+    ]
+    assert camera_pose[2] == pytest.approx(34.0)
+
+
+def test_training_point_visualization_rejects_unknown_map(tmp_path):
+    with pytest.raises(ValueError, match="map must be one of"):
+        create_training_points_visualization_world(
+            discover_worlds(WORLDS_DIRECTORY),
+            load_training_points(PROJECT_ROOT / "config/training_points.yaml"),
+            selected_world="unknown",
+            directory=tmp_path,
+        )
 
 
 def test_parking_row_is_unique_and_outside_every_arena():

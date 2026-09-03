@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 
 
 MAX_SIM_SPEED_FACTOR = 20.0
+MAX_PHYSICS_STEP_SIZE = 0.01
 
 
 def validate_sim_speed_factor(value: object) -> float:
@@ -29,20 +30,40 @@ def validate_sim_speed_factor(value: object) -> float:
     return factor
 
 
+def validate_physics_step_size(value: object) -> float:
+    """Return a bounded Gazebo step size suitable for training overrides."""
+    try:
+        step_size = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("physics_step_size must be a number") from exc
+    if not math.isfinite(step_size) or step_size <= 0.0:
+        raise ValueError("physics_step_size must be finite and greater than zero")
+    if step_size > MAX_PHYSICS_STEP_SIZE:
+        raise ValueError(
+            "physics_step_size cannot exceed "
+            f"{MAX_PHYSICS_STEP_SIZE:g} seconds"
+        )
+    return step_size
+
+
 def create_scaled_world(
     source: str | Path,
     speed_factor: object,
     *,
     directory: str | Path | None = None,
+    physics_step_size: object | None = None,
 ) -> Path:
-    """Copy an SDF world and set its target real-time factor."""
+    """Copy an SDF world and set its target speed and optional physics step."""
     factor = validate_sim_speed_factor(speed_factor)
     source_path = Path(source).expanduser().resolve()
     if not source_path.is_file():
         raise FileNotFoundError(f"Gazebo world does not exist: {source_path}")
 
     tree = ET.parse(source_path)
-    physics = tree.getroot().find("./world/physics")
+    world = tree.getroot().find("./world")
+    if world is None:
+        raise ValueError(f"Gazebo SDF has no <world> element: {source_path}")
+    physics = world.find("physics")
     if physics is None:
         raise ValueError(
             f"Gazebo world has no <physics> element: {source_path}"
@@ -56,6 +77,9 @@ def create_scaled_world(
         raise ValueError("Gazebo max_step_size must be numeric") from exc
     if not math.isfinite(max_step_size) or max_step_size <= 0.0:
         raise ValueError("Gazebo max_step_size must be finite and positive")
+    if physics_step_size is not None:
+        max_step_size = validate_physics_step_size(physics_step_size)
+        max_step_element.text = f"{max_step_size:.12g}"
 
     update_rate = factor / max_step_size
     update_rate_element = physics.find("real_time_update_rate")
@@ -66,6 +90,28 @@ def create_scaled_world(
     if factor_element is None:
         factor_element = ET.SubElement(physics, "real_time_factor")
     factor_element.text = f"{factor:.12g}"
+
+    # MarthaEnv uses fresh /gazebo/model_states messages both to validate a
+    # reset and to express goals in the episode odometry frame. Training's
+    # combined world already carries this plugin; normal simulation worlds
+    # must expose the same contract for standalone evaluation and navigation.
+    state_plugins = [
+        plugin
+        for plugin in world.findall("plugin")
+        if plugin.get("filename") == "libgazebo_ros_state.so"
+    ]
+    if not state_plugins:
+        state_plugin = ET.SubElement(
+            world,
+            "plugin",
+            {
+                "name": "gazebo_ros_state",
+                "filename": "libgazebo_ros_state.so",
+            },
+        )
+        ros = ET.SubElement(state_plugin, "ros")
+        ET.SubElement(ros, "namespace").text = "/gazebo"
+        ET.SubElement(state_plugin, "update_rate").text = "100.0"
 
     target_directory = None if directory is None else str(directory)
     descriptor, temporary_name = tempfile.mkstemp(

@@ -14,15 +14,18 @@ from .martha_env import (
     ACTION_SIZE,
     LASER_SECTORS,
     OBSERVATION_SIZE,
-    POLICY_ARCHITECTURE,
     POLICY_CONTRACT_VERSION,
 )
 from .observations import (
+    GOAL_DISTANCE_ENCODING,
+    GOAL_GUIDANCE_MODE,
+    LOCAL_WAYPOINT_DISTANCE,
     OBSERVATION_FRAME_SIZE,
     OBSERVATION_HISTORY_FRAMES,
     OBSERVATION_HISTORY_SECONDS,
 )
-from .network import ActorCritic
+from .network import ActorCritic, POLICY_ARCHITECTURE
+from .network import RECURRENT_HIDDEN_SIZE, RECURRENT_NUM_LAYERS
 
 
 REQUIRED_CONTRACT_FIELDS = (
@@ -31,12 +34,18 @@ REQUIRED_CONTRACT_FIELDS = (
     "action_size",
     "laser_sectors",
     "architecture",
+    "recurrent_type",
+    "recurrent_hidden_size",
+    "recurrent_num_layers",
     "observation_layout",
     "observation_frame_size",
     "observation_history_frames",
     "observation_history_seconds",
     "scan_range_max",
-    "max_goal_distance",
+    "goal_distance_encoding",
+    "goal_guidance_mode",
+    "local_waypoint_distance",
+    "goal_distance_scale",
     "action_limits",
 )
 
@@ -112,6 +121,8 @@ def validate_policy_contract(
         "laser_sectors": LASER_SECTORS,
         "observation_frame_size": OBSERVATION_FRAME_SIZE,
         "observation_history_frames": OBSERVATION_HISTORY_FRAMES,
+        "recurrent_hidden_size": RECURRENT_HIDDEN_SIZE,
+        "recurrent_num_layers": RECURRENT_NUM_LAYERS,
     }
     for key, required in required_scalars.items():
         try:
@@ -125,7 +136,10 @@ def validate_policy_contract(
 
     required_strings = {
         "architecture": POLICY_ARCHITECTURE,
+        "recurrent_type": "lstm",
         "observation_layout": "frame_major",
+        "goal_distance_encoding": GOAL_DISTANCE_ENCODING,
+        "goal_guidance_mode": GOAL_GUIDANCE_MODE,
     }
     for key, required in required_strings.items():
         if contract.get(key) != required:
@@ -137,7 +151,8 @@ def validate_policy_contract(
     for key in (
         "observation_history_seconds",
         "scan_range_max",
-        "max_goal_distance",
+        "local_waypoint_distance",
+        "goal_distance_scale",
     ):
         try:
             actual = float(contract[key])
@@ -152,6 +167,13 @@ def validate_policy_contract(
         abs_tol=1e-9,
     ):
         raise ValueError("policy_contract observation_history_seconds mismatch")
+    if not math.isclose(
+        float(contract["local_waypoint_distance"]),
+        LOCAL_WAYPOINT_DISTANCE,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    ):
+        raise ValueError("policy_contract local_waypoint_distance mismatch")
 
     action_limits_from_checkpoint({"policy_contract": contract})
     if expected is None:

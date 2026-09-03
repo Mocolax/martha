@@ -2,14 +2,83 @@
 # mapa. Ejemplo: {id: room_01, x: 1.0, y: 2.0, yaw: null}
 worlds:
   four_rooms:
-    points: []
+    points:
+      - {id: 1, x: -8.5, y: 8.5, yaw: null}
+      - {id: 2, x: -2.5, y: 8.5, yaw: null}
+      - {id: 3, x: -5.5, y: 5.5, yaw: null}
+      - {id: 4, x: 1.5, y: 8.5, yaw: null}
+      - {id: 5, x: 7.5, y: 8.5, yaw: null}
+      - {id: 6, x: 8, y: 2, yaw: null}
+      - {id: 7, x: 1.5, y: -1.5, yaw: null}
+      - {id: 8, x: -8, y: -8, yaw: null}
+      - {id: 9, x: -2, y: -8, yaw: null}
+      - {id: 10, x: -2, y: -2, yaw: null}
+      - {id: 11, x: 7.5, y: -7.5, yaw: null}
   hall:
-    points: []
+    points:
+      - {id: 1, x: -7, y: -7, yaw: null}
+      - {id: 2, x: -7, y: 3, yaw: null}
+      - {id: 3, x: -7.5, y: 7, yaw: null}
+      - {id: 4, x: -1, y: -3, yaw: null}
+      - {id: 5, x: 3, y: -3, yaw: null}
+      - {id: 6, x: 7, y: -7, yaw: null}
+      - {id: 7, x: 7, y: -3, yaw: null}
+      - {id: 8, x: 7, y: 2, yaw: null}
+      - {id: 9, x: 2.5, y: 7.5, yaw: null}
+      - {id: 10, x: 1.5, y: 2.0, yaw: null}
   multi:
-    points: []
+    points:
+      - {id: 1, x: -6, y: -8, yaw: null}
+      - {id: 2, x: -8, y: -2, yaw: null}
+      - {id: 3, x: -7.5, y: 7, yaw: null}
+      - {id: 4, x: -1, y: -3, yaw: null}
+      - {id: 5, x: 8, y: -7, yaw: null}
+      - {id: 6, x: 8.5, y: 0, yaw: null}
+      - {id: 7, x: -1, y: -8, yaw: null}
+      - {id: 8, x: 1.5, y: 4, yaw: null}
+      - {id: 9, x: -2.5, y: 8.5, yaw: null}
+      - {id: 10, x: 6.5, y: 8, yaw: null}
   roblab:
-    points: []
+    points:
+      - {id: 1, x: -4.5, y: -4.5, yaw: null}
+      - {id: 2, x: -5, y: 2, yaw: null}
+      - {id: 3, x: -7, y: 5.6, yaw: null}
+      - {id: 4, x: 1, y: 7, yaw: null}
+      - {id: 5, x: -6.5, y: -2.5, yaw: null}
+      - {id: 6, x: -1.5, y: 0.5, yaw: null}
+      - {id: 7, x: 2.5, y: 1, yaw: null}
   room:
-    points: []
+    points:
+      - {id: 1, x: -8, y: -8, yaw: null}
+      - {id: 2, x: 0, y: -8, yaw: null}
+      - {id: 3, x: 8, y: -8, yaw: null}
+      - {id: 4, x: 8, y: 0, yaw: null}
+      - {id: 5, x: 8, y: 8, yaw: null}
+      - {id: 6, x: 0, y: 8, yaw: null}
+      - {id: 7, x: -8, y: 8, yaw: null}
+      - {id: 8, x: -8, y: 0, yaw: null}
+      - {id: 9, x: -1.5, y: 0, yaw: null}
+      - {id: 10, x: -6, y: 6, yaw: null}
+      - {id: 11, x: -2, y: 6, yaw: null}
+      - {id: 12, x: 2, y: 6, yaw: null}
+      - {id: 13, x: 6, y: 6, yaw: null}
+      - {id: 14, x: -6, y: -6, yaw: null}
+      - {id: 15, x: -2, y: -6, yaw: null}
+      - {id: 16, x: 2, y: -6, yaw: null}
+      - {id: 17, x: 6, y: -6, yaw: null}
+      - {id: 18, x: -6, y: 0, yaw: null}
+      - {id: 19, x: -2, y: 0, yaw: null}
+      - {id: 20, x: 0, y: 2, yaw: null}
+      - {id: 21, x: 8, y: 2, yaw: null}
+      - {id: 22, x: 8, y: -2, yaw: null}
   tube:
-    points: []
+    points:
+      - {id: 1, x: -8, y: 4, yaw: null}
+      - {id: 2, x: -2.5, y: 8.5, yaw: null}
+      - {id: 3, x: 8, y: 8, yaw: null}
+      - {id: 4, x: 5, y: 4, yaw: null}
+      - {id: 5, x: -1, y: -2.5, yaw: null}
+      - {id: 6, x: 7, y: -7, yaw: null}
+      - {id: 7, x: 7, y: -3, yaw: null}
+      - {id: 8, x: -8, y: -8, yaw: null}
+      - {id: 9, x: 0, y: 0, yaw: null}

@@ -153,6 +153,7 @@ def test_all_launch_and_yaml_files_are_parseable_without_ros_imports():
 
 
 def test_sim_and_hardware_ekfs_keep_the_same_public_frame_contract():
+    assert "/**/ekf_filter_node" in _load_yaml("config/ekf_rl_sim.yaml")
     simulation = _ros_parameters("config/ekf_rl_sim.yaml", "ekf_filter_node")
     hardware = _ros_parameters("config/ekf_hardware.yaml", "ekf_filter_node")
 
@@ -193,6 +194,7 @@ def test_only_current_launch_files_remain():
         "hardware.launch.py",
         "ppo_navigation.launch.py",
         "simulation.launch.py",
+        "training_points.launch.py",
     }
 
 
@@ -291,7 +293,17 @@ def test_simulation_launch_has_the_rl_sensor_and_odometry_pipeline():
     tree = _parse_python("launch/simulation.launch.py")
     literals = _string_literals(tree)
 
-    assert {"gui", "world", "sim_speed_factor", "robot_count"} <= (
+    assert {
+        "gui",
+        "world",
+        "sim_speed_factor",
+        "physics_step_size",
+        "training_kinematic",
+        "lidar_samples",
+        "lidar_visualize",
+        "robot_count",
+        "force_namespaced_fleet",
+    } <= (
         _declared_launch_arguments(tree)
     )
     assert {
@@ -318,7 +330,9 @@ def test_learning_urdf_declares_namespaced_contact_sensor():
         in xacro
     )
     assert "<update_rate>100</update_rate>" in xacro
-    assert "${robot_namespace}" in xacro
+    assert "<namespace>" not in xacro
+    assert xacro.count(":__ns:=${plugin_namespace}") == 5
+    assert "<argument>__ns:=${plugin_namespace}</argument>" not in xacro
 
 
 def test_bringup_launch_selects_backends_and_optional_mapping_tools():
@@ -433,6 +447,7 @@ def test_console_script_targets_exist_without_importing_them():
         "ppo_train",
         "ppo_evaluate",
         "ppo_plot",
+        "ppo_benchmark",
         "ppo_policy",
     }
     assert required == scripts.keys()

@@ -9,6 +9,7 @@ from datetime import datetime
 import math
 from pathlib import Path
 import random
+import time
 from typing import Any, Iterable
 
 import numpy as np
@@ -35,41 +36,68 @@ from .evaluation_core import (
 from .logic import PPOLogic
 from .martha_env import MarthaEnv
 from .network import ActorCritic
+from .observations import DEFAULT_GOAL_DISTANCE_SCALE
 from .reward import REWARD_COMPONENT_NAMES, RewardConfig
 from .training_layout import shuffled_world_index
-from martha.simulation_speed import validate_sim_speed_factor
+from .world_map import TRAINING_WORLD_NAMES
+from martha.simulation_speed import (
+    validate_physics_step_size,
+    validate_sim_speed_factor,
+)
 
 
 # Edit this block for the normal training setup. Every value can still be
 # overridden temporarily from the command line without changing this file.
 @dataclass(frozen=True)
 class TrainingDefaults:
-    episodes: int = 2000
-    num_envs: int = 8
-    sim_speed_factor: float = 2.0
-    gazebo_gui: bool = True
+    episodes: int = 400
+    num_envs: int = 4
+    sim_speed_factor: float = 5.0
+    physics_step_size: float = 0.002
+    lidar_samples: int = 180
+    training_kinematic: bool = True
+    gazebo_gui: bool = False
     gazebo_startup_timeout: float = 240.0
     training_points: Path | None = None
-    max_steps: int = 600
+    max_steps: int = 1400
+    map_batch_episodes: int = 4
+    curriculum_enabled: bool = False
+    curriculum_easy_fraction: float = 0.40
+    curriculum_medium_fraction: float = 0.60
+    curriculum_full_fraction: float = 0.85
+    curriculum_easy_max_distance: float = 6.0
+    curriculum_medium_max_distance: float = 10.0
+    curriculum_hard_max_distance: float = 18.0
+    max_wall_time_hours: float = 24.0
+    shutdown_grace_minutes: float = 30.0
     rollout_steps: int = 1024
     ppo_epochs: int = 8
     minibatch_size: int = 256
-    lr: float = 2e-5
+    recurrent_sequence_length: int = 64
+    imitation_enabled: bool = True
+    imitation_weight: float = 2.0
+    teacher_initial_probability: float = 1.0
+    teacher_final_probability: float = 1.0
+    teacher_decay_fraction: float = 1.0
+    lr: float = 1e-4
     gamma: float = 0.99
     lam: float = 0.95
     eps: float = 0.2
+    actor_coef: float = 0.0
     value_coef: float = 0.5
-    entropy_coef: float = 0.002
+    entropy_coef: float = 0.0
     # Exploration remains constant first, then entropy encouragement fades to
     # zero so PPO can consolidate a lower variance policy when appropriate.
-    entropy_exploration_fraction: float = 0.25
-    entropy_decay_fraction: float = 0.55
+    entropy_exploration_fraction: float = 0.10
+    entropy_decay_fraction: float = 0.25
+    policy_std_initial: float = 0.40
+    policy_std_final: float = 0.40
     reward_scale: float = 1
     max_grad_norm: float = 0.5
     eval_every: int = 100
-    eval_episodes: int = 1
-    eval_max_steps: int = 400
-    eval_map_count: int = 3
+    eval_episodes: int = 2
+    eval_max_steps: int = 1400
+    eval_map_count: int = 6
     backend: str = "gazebo"
     map_mode: str = "random"
     map_index: int | None = None
@@ -77,11 +105,11 @@ class TrainingDefaults:
     goal_frame: str = "odom"
     goal_tolerance: float = 0.25
     min_goal_distance: float = 2.0
-    max_goal_distance: float = 12.0
+    goal_distance_scale: float = DEFAULT_GOAL_DISTANCE_SCALE
     scan_range_max: float = 8.0
-    max_vx: float = 0.35
-    max_vy: float = 0.35
-    max_wz: float = 0.80
+    max_vx: float = 0.5
+    max_vy: float = 0.5
+    max_wz: float = 0.8
     max_action_delta: float = 0.35
     run_name: str | None = None
     runs_dir: Path = Path.home() / "ros2_ws/src/martha/martha/PPO/ppo_runs"
@@ -92,11 +120,23 @@ class TrainingDefaults:
 
 DEFAULTS = TrainingDefaults()
 
+CURRICULUM_WORLD_ORDER = (
+    "room",
+    "roblab",
+    "hall",
+    "tube",
+    "four_rooms",
+    "multi",
+)
+
 
 METRIC_FIELDS = [
     "episode",
+    "world_index",
+    "shortest_path",
     "episode_reward",
     "episode_scaled_reward",
+    "reward_step",
     "reward_distance",
     "reward_orientation",
     "reward_shortest_distance",
@@ -109,7 +149,16 @@ METRIC_FIELDS = [
     "reached_goal",
     "collision",
     "out_of_bounds",
+    "stagnated",
     "spl",
+    "elapsed_wall_s",
+    "training_steps",
+    "training_steps_per_second",
+    "physics_wall_s",
+    "reset_wall_s",
+    "ppo_wall_s",
+    "evaluation_wall_s",
+    "checkpoint_wall_s",
     "updates",
     "loss",
     "actor_loss",
@@ -121,6 +170,8 @@ METRIC_FIELDS = [
     "policy_std",
     "actor_inactive_relu",
     "critic_inactive_relu",
+    "imitation_loss",
+    "teacher_fraction",
     "eval_mean_reward",
     "eval_success_rate",
     "eval_collision_rate",
@@ -139,6 +190,45 @@ _EMPTY_BEST_EVAL = {
     "eval_collision_rate": math.inf,
     "eval_mean_reward": -math.inf,
 }
+
+
+@dataclass
+class TrainingTimings:
+    """Cumulative wall-clock profile for one training attempt."""
+
+    started_at: float
+    training_steps: int = 0
+    physics_wall_s: float = 0.0
+    reset_wall_s: float = 0.0
+    ppo_wall_s: float = 0.0
+    evaluation_wall_s: float = 0.0
+    checkpoint_wall_s: float = 0.0
+
+    @classmethod
+    def start(cls) -> "TrainingTimings":
+        return cls(started_at=time.monotonic())
+
+    def metric_values(self) -> dict[str, float | int]:
+        elapsed = max(time.monotonic() - self.started_at, 1e-9)
+        return {
+            "elapsed_wall_s": elapsed,
+            "training_steps": self.training_steps,
+            "training_steps_per_second": self.training_steps / elapsed,
+            "physics_wall_s": self.physics_wall_s,
+            "reset_wall_s": self.reset_wall_s,
+            "ppo_wall_s": self.ppo_wall_s,
+            "evaluation_wall_s": self.evaluation_wall_s,
+            "checkpoint_wall_s": self.checkpoint_wall_s,
+        }
+
+
+def _empty_eval_stats() -> dict[str, float]:
+    return {
+        "eval_mean_reward": math.nan,
+        "eval_success_rate": math.nan,
+        "eval_collision_rate": math.nan,
+        "eval_mean_spl": math.nan,
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -162,9 +252,11 @@ def _validate_args(args: argparse.Namespace) -> None:
         "episodes": args.episodes,
         "num_envs": args.num_envs,
         "max_steps": args.max_steps,
+        "map_batch_episodes": args.map_batch_episodes,
         "rollout_steps": args.rollout_steps,
         "ppo_epochs": args.ppo_epochs,
         "minibatch_size": args.minibatch_size,
+        "recurrent_sequence_length": args.recurrent_sequence_length,
         "eval_max_steps": args.eval_max_steps,
     }
     for name, value in positive_ints.items():
@@ -200,26 +292,47 @@ def _validate_args(args: argparse.Namespace) -> None:
     if args.gazebo_startup_timeout <= 0.0:
         raise ValueError("gazebo_startup_timeout must be positive")
     validate_sim_speed_factor(args.sim_speed_factor)
+    validate_physics_step_size(args.physics_step_size)
+    if args.lidar_samples < 36 or args.lidar_samples % 36 != 0:
+        raise ValueError(
+            "TrainingDefaults.lidar_samples must be a positive multiple of 36"
+        )
     numeric_values = {
         "lr": args.lr,
         "gamma": args.gamma,
         "lam": args.lam,
         "eps": args.eps,
         "value-coef": args.value_coef,
+        "actor-coef": args.actor_coef,
         "entropy-coef": args.entropy_coef,
         "entropy-exploration-fraction": args.entropy_exploration_fraction,
         "entropy-decay-fraction": args.entropy_decay_fraction,
+        "policy-std-initial": args.policy_std_initial,
+        "policy-std-final": args.policy_std_final,
+        "imitation-weight": args.imitation_weight,
+        "teacher-initial-probability": args.teacher_initial_probability,
+        "teacher-final-probability": args.teacher_final_probability,
+        "teacher-decay-fraction": args.teacher_decay_fraction,
         "reward-scale": args.reward_scale,
         "max-grad-norm": args.max_grad_norm,
         "goal-tolerance": args.goal_tolerance,
         "min-goal-distance": args.min_goal_distance,
-        "max-goal-distance": args.max_goal_distance,
+        "goal-distance-scale": args.goal_distance_scale,
         "scan-range-max": args.scan_range_max,
         "max-vx": args.max_vx,
         "max-vy": args.max_vy,
         "max-wz": args.max_wz,
         "max-action-delta": args.max_action_delta,
         "gazebo-startup-timeout": args.gazebo_startup_timeout,
+        "physics-step-size": args.physics_step_size,
+        "max-wall-time-hours": args.max_wall_time_hours,
+        "shutdown-grace-minutes": args.shutdown_grace_minutes,
+        "curriculum-easy-fraction": args.curriculum_easy_fraction,
+        "curriculum-medium-fraction": args.curriculum_medium_fraction,
+        "curriculum-full-fraction": args.curriculum_full_fraction,
+        "curriculum-easy-max-distance": args.curriculum_easy_max_distance,
+        "curriculum-medium-max-distance": args.curriculum_medium_max_distance,
+        "curriculum-hard-max-distance": args.curriculum_hard_max_distance,
     }
     for name, value in numeric_values.items():
         if not math.isfinite(float(value)):
@@ -232,7 +345,7 @@ def _validate_args(args: argparse.Namespace) -> None:
         "max-grad-norm",
         "goal-tolerance",
         "min-goal-distance",
-        "max-goal-distance",
+        "goal-distance-scale",
         "scan-range-max",
         "max-vx",
         "max-vy",
@@ -240,16 +353,68 @@ def _validate_args(args: argparse.Namespace) -> None:
         "max-action-delta",
         "gazebo-startup-timeout",
         "reward-scale",
+        "physics-step-size",
+        "max-wall-time-hours",
+        "imitation-weight",
     )
     if any(numeric_values[name] <= 0.0 for name in positive_names):
         raise ValueError(
             "learning, navigation and sensor limits must be positive"
         )
-    if args.value_coef < 0.0 or args.entropy_coef < 0.0:
-        raise ValueError("value_coef and entropy_coef cannot be negative")
-    if args.min_goal_distance >= args.max_goal_distance:
+    if (
+        args.actor_coef < 0.0
+        or args.value_coef < 0.0
+        or args.entropy_coef < 0.0
+    ):
         raise ValueError(
-            "min_goal_distance must be below max_goal_distance"
+            "actor_coef, value_coef and entropy_coef cannot be negative"
+        )
+    if not 0.0 < args.policy_std_final <= args.policy_std_initial:
+        raise ValueError(
+            "policy STD limits must satisfy 0 < final <= initial"
+        )
+    if not (
+        0.0 <= args.teacher_final_probability
+        <= args.teacher_initial_probability
+        <= 1.0
+        and 0.0 < args.teacher_decay_fraction <= 1.0
+    ):
+        raise ValueError(
+            "teacher probabilities must decrease inside [0, 1] and the "
+            "decay fraction must be in (0, 1]"
+        )
+    curriculum_fractions = (
+        args.curriculum_easy_fraction,
+        args.curriculum_medium_fraction,
+        args.curriculum_full_fraction,
+    )
+    if not (
+        0.0 < curriculum_fractions[0]
+        < curriculum_fractions[1]
+        < curriculum_fractions[2]
+        < 1.0
+    ):
+        raise ValueError(
+            "curriculum fractions must be strictly increasing inside (0, 1)"
+        )
+    curriculum_distances = (
+        args.curriculum_easy_max_distance,
+        args.curriculum_medium_max_distance,
+        args.curriculum_hard_max_distance,
+    )
+    if not (
+        args.min_goal_distance <= curriculum_distances[0]
+        <= curriculum_distances[1]
+        <= curriculum_distances[2]
+    ):
+        raise ValueError(
+            "curriculum route distances must increase from min_goal_distance"
+        )
+    if args.shutdown_grace_minutes < 0.0:
+        raise ValueError("shutdown_grace_minutes cannot be negative")
+    if args.shutdown_grace_minutes >= args.max_wall_time_hours * 60.0:
+        raise ValueError(
+            "shutdown_grace_minutes must be below max_wall_time_hours"
         )
     if args.backend == "hardware":
         if args.goal is None:
@@ -320,12 +485,29 @@ def entropy_coefficient_for_episode(
     return float(base_coefficient) * (1.0 - decay_progress)
 
 
+def teacher_probability_for_episode(
+    args: argparse.Namespace,
+    episode: int,
+) -> float:
+    """Return the DAgger teacher-action probability for one episode."""
+    decay_episodes = max(1.0, args.episodes * args.teacher_decay_fraction)
+    progress = min(max((max(1, episode) - 1) / decay_episodes, 0.0), 1.0)
+    return float(
+        args.teacher_initial_probability
+        + progress
+        * (
+            args.teacher_final_probability
+            - args.teacher_initial_probability
+        )
+    )
+
+
 def apply_entropy_schedule(
     ppo: PPOLogic,
     args: argparse.Namespace,
     episode: int,
 ) -> None:
-    """Set PPO's current entropy weight immediately before an update."""
+    """Apply the entropy weight and learned-STD ceiling for this episode."""
     ppo.entropy_coef = entropy_coefficient_for_episode(
         args.entropy_coef,
         args.episodes,
@@ -333,6 +515,16 @@ def apply_entropy_schedule(
         args.entropy_decay_fraction,
         max(1, episode),
     )
+    decay_start = args.episodes * args.entropy_exploration_fraction
+    decay_duration = args.episodes * args.entropy_decay_fraction
+    decay_progress = min(
+        max((max(1, episode) - decay_start) / decay_duration, 0.0),
+        1.0,
+    )
+    std_ceiling = args.policy_std_initial + decay_progress * (
+        args.policy_std_final - args.policy_std_initial
+    )
+    ppo.network.clamp_policy_std(std_ceiling)
 
 
 def _action_limits_from_args(args: argparse.Namespace) -> ActionLimits:
@@ -373,6 +565,15 @@ def reward_config_from_checkpoint(
         return RewardConfig()
     if not isinstance(saved, dict):
         raise ValueError("checkpoint reward_config must be a dictionary")
+    expected_fields = set(asdict(RewardConfig()))
+    saved_fields = set(saved)
+    if saved_fields != expected_fields:
+        missing = sorted(expected_fields - saved_fields)
+        unexpected = sorted(saved_fields - expected_fields)
+        raise ValueError(
+            "checkpoint reward_config schema mismatch; start a new run "
+            f"(missing={missing}, unexpected={unexpected})"
+        )
     try:
         return RewardConfig(**saved)
     except TypeError as exc:
@@ -424,10 +625,10 @@ def environment_kwargs(
         ),
         "max_steps": args.max_steps,
         "goal_tolerance": args.goal_tolerance,
-        "max_goal_distance": _runtime_value(
+        "goal_distance_scale": _runtime_value(
             resume_checkpoint,
-            "max_goal_distance",
-            args.max_goal_distance,
+            "goal_distance_scale",
+            args.goal_distance_scale,
         ),
         "min_goal_distance": args.min_goal_distance,
         "action_limits": action_limits,
@@ -464,11 +665,14 @@ def build_agent(
         eps=args.eps,
         gamma=args.gamma,
         lam=args.lam,
+        actor_coef=args.actor_coef,
         value_coef=args.value_coef,
         entropy_coef=args.entropy_coef,
         max_grad_norm=args.max_grad_norm,
         ppo_epochs=args.ppo_epochs,
         minibatch_size=args.minibatch_size,
+        recurrent_sequence_length=args.recurrent_sequence_length,
+        imitation_coef=args.imitation_weight,
     )
     return network, ppo
 
@@ -517,7 +721,7 @@ def _serializable_config(
         observation_size=int(env.observation_space.shape[0]),
         action_size=int(env.action_space.shape[0]),
         scan_range_max=float(env.policy_contract["scan_range_max"]),
-        max_goal_distance=float(env.max_goal_distance),
+        goal_distance_scale=float(env.goal_distance_scale),
         max_vx=float(env.action_limits.max_vx),
         max_vy=float(env.action_limits.max_vy),
         max_wz=float(env.action_limits.max_wz),
@@ -713,8 +917,69 @@ def training_world_index(
     if episode <= 0:
         raise ValueError("training episode must be positive")
 
-    round_index = (episode - 1) // args.num_envs
-    return shuffled_world_index(args.seed, round_index, world_count)
+    block_size = int(
+        getattr(args, "map_batch_episodes", getattr(args, "num_envs", 1))
+    )
+    if block_size <= 0:
+        raise ValueError("map_batch_episodes must be positive")
+    round_index = (episode - 1) // block_size
+    if not bool(getattr(args, "curriculum_enabled", False)):
+        return shuffled_world_index(args.seed, round_index, world_count)
+
+    total_episodes = int(args.episodes)
+    if total_episodes <= 0:
+        raise ValueError("episodes must be positive for curriculum training")
+    available_names = set(TRAINING_WORLD_NAMES[:world_count])
+    eligible_names = [
+        name
+        for name in CURRICULUM_WORLD_ORDER
+        if name in available_names
+    ]
+    if not eligible_names:
+        raise ValueError("curriculum has no available training worlds")
+    selected = shuffled_world_index(
+        args.seed,
+        round_index,
+        len(eligible_names),
+    )
+    return TRAINING_WORLD_NAMES.index(eligible_names[selected])
+
+
+def training_world_indices_for_round(
+    args: argparse.Namespace,
+    world_count: int,
+    episodes: list[int],
+) -> list[int]:
+    """Assign concurrent fleet episodes to distinct preloaded map islands."""
+    if not episodes:
+        return []
+    if len(episodes) > world_count:
+        raise ValueError("a mixed round cannot exceed the map count")
+    if args.map_index is not None:
+        return [int(args.map_index)] * len(episodes)
+    round_index = (episodes[0] - 1) // max(1, args.map_batch_episodes)
+    first = shuffled_world_index(args.seed, round_index, world_count)
+    return [
+        (first + offset) % world_count
+        for offset in range(len(episodes))
+    ]
+
+
+def curriculum_max_goal_distance(
+    args: argparse.Namespace,
+    episode: int,
+) -> float | None:
+    """Return the current geodesic route ceiling for training resets."""
+    if not bool(getattr(args, "curriculum_enabled", False)):
+        return None
+    progress = (episode - 1) / int(args.episodes)
+    if progress < args.curriculum_easy_fraction:
+        return float(args.curriculum_easy_max_distance)
+    if progress < args.curriculum_medium_fraction:
+        return float(args.curriculum_medium_max_distance)
+    if progress < args.curriculum_full_fraction:
+        return float(args.curriculum_hard_max_distance)
+    return None
 
 
 def training_reset_options(
@@ -732,6 +997,8 @@ def training_reset_options(
 def _parallel_episode_state(
     observation: np.ndarray,
     reset_info: dict[str, Any],
+    *,
+    episode: int | None = None,
 ) -> dict[str, Any]:
     """Build the mutable accounting state for one parallel episode."""
     shortest, previous_position, path_length = episode_path_state(reset_info)
@@ -744,7 +1011,110 @@ def _parallel_episode_state(
         "scaled_reward": 0.0,
         "reward_components": _empty_reward_components(),
         "length": 0,
+        "episode": episode,
+        "last_info": dict(reset_info),
     }
+
+
+def _evaluate_recorded_actions(
+    network: ActorCritic,
+    observations: np.ndarray,
+    actions: np.ndarray,
+    recurrent_state: Any,
+) -> tuple[torch.Tensor, torch.Tensor, Any]:
+    """Evaluate externally selected actions for critic-only transitions."""
+    device = next(network.parameters()).device
+    states = torch.as_tensor(observations, dtype=torch.float32, device=device)
+    action_values = torch.as_tensor(actions, dtype=torch.float32, device=device)
+    with torch.no_grad():
+        dist, values, next_recurrent = network.forward_recurrent(
+            states,
+            recurrent_state,
+        )
+        dist = torch.distributions.Normal(
+            dist.mean[:, 0],
+            dist.stddev[:, 0],
+        )
+        logprobs = network._squashed_log_prob(dist, action_values)
+    return logprobs.cpu(), values[:, 0].cpu(), next_recurrent
+
+
+def _record_shared_transition(
+    *,
+    state: dict[str, Any],
+    transition: tuple[np.ndarray, float, bool, bool, dict[str, Any]],
+    action: np.ndarray,
+    logprob: Any,
+    value: Any,
+    next_value: Any,
+    buffer: RolloutBuffer,
+    reward_scale: float,
+    timings: TrainingTimings,
+    policy_sample: bool,
+    next_recurrent_state: Any,
+    expert_action: np.ndarray | None = None,
+) -> bool:
+    """Store and account for one normal or supervised fleet transition."""
+    next_observation, reward, terminated, truncated, info = transition
+    episode_end = bool(terminated or truncated)
+    buffer.store(
+        state=state["observation"],
+        action=action,
+        logprob=logprob,
+        reward=scale_reward_for_ppo(reward, reward_scale),
+        value=value,
+        next_value=(0.0 if terminated else next_value),
+        terminated=terminated,
+        episode_end=episode_end,
+        policy_sample=policy_sample,
+        recurrent_state=state["recurrent_state"],
+        episode_start=state["episode_start"],
+        expert_action=expert_action,
+    )
+    state["reward"] += float(reward)
+    state["scaled_reward"] += scale_reward_for_ppo(reward, reward_scale)
+    _accumulate_reward_components(state["reward_components"], info)
+    state["length"] += 1
+    state["previous_position"], state["path_length"] = advance_path(
+        state["previous_position"],
+        state["path_length"],
+        info,
+    )
+    state["observation"] = next_observation
+    state["recurrent_state"] = next_recurrent_state
+    state["episode_start"] = False
+    state["last_info"] = dict(info)
+    timings.training_steps += 1
+    if episode_end:
+        state.update(
+            terminated=bool(terminated),
+            truncated=bool(truncated),
+            info=info,
+        )
+    return episode_end
+
+
+def _truncate_active_for_wall_limit(
+    active: dict[int, dict[str, Any]],
+    buffers: list[RolloutBuffer],
+) -> dict[int, dict[str, Any]]:
+    """Finish active episodes as bootstrapped truncations at the hard deadline."""
+    finished = {}
+    for index, state in list(active.items()):
+        if len(buffers[index]) > 0:
+            buffers[index].episode_ends[-1] = 1.0
+        info = dict(state.get("last_info", {}))
+        info.update(
+            reached_goal=False,
+            collision=False,
+            out_of_bounds=False,
+            stagnated=False,
+            wall_time_limit=True,
+        )
+        state.update(terminated=False, truncated=True, info=info)
+        finished[index] = state
+        del active[index]
+    return finished
 
 
 def _confirm_hardware_reset(
@@ -837,6 +1207,8 @@ def evaluate_policy(
                         seed=seed,
                         options=_reset_options(args, world_index),
                     )
+                    recurrent_state = network.initial_recurrent_state(1)
+                    episode_start = True
                     shortest, previous_position, path_length = (
                         episode_path_state(reset_info)
                     )
@@ -845,10 +1217,16 @@ def evaluate_policy(
                     truncated = False
                     info: dict[str, Any] = {}
                     for step_number in range(1, args.eval_max_steps + 1):
-                        action, _, _ = network.get_action(
-                            observation,
-                            deterministic=True,
+                        action, _, _, recurrent_state = (
+                            network.get_actions_recurrent(
+                                observation,
+                                recurrent_state,
+                                episode_starts=[episode_start],
+                                deterministic=True,
+                            )
                         )
+                        action = action.squeeze(0)
+                        episode_start = False
                         action_array = action.numpy().astype(np.float32)
                         assert_finite("evaluation action", action_array)
                         observation, reward, terminated, truncated, info = (
@@ -911,6 +1289,7 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
     )
     _warn_legacy_reward_config(resume_checkpoint)
     if resume_checkpoint is not None:
+        validate_checkpoint_data(resume_checkpoint, require_optimizer=True)
         _validate_resume_reward_scale(args, resume_checkpoint)
     run_dir = make_run_dir(args)
     metrics_path, last_model_path, best_model_path = _checkpoint_paths(run_dir)
@@ -960,6 +1339,7 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
     completed_episode = start_episode - 1
     try:
         for episode in range(start_episode, args.episodes + 1):
+            apply_entropy_schedule(ppo, args, episode)
             train_seed = episode_seed(args.seed, 0, episode)
             _confirm_hardware_reset(args, f"training episode {episode}")
             observation, reset_info = env.reset(
@@ -980,12 +1360,20 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
             terminated = False
             truncated = False
             info: dict[str, Any] = {}
+            recurrent_state = network.initial_recurrent_state(1)
+            episode_start = True
 
             for step_number in range(1, args.max_steps + 1):
-                action, logprob, value = network.get_action(
-                    observation,
-                    deterministic=False,
+                transition_recurrent_state = recurrent_state
+                action, logprob, value, next_recurrent_state = (
+                    network.get_actions_recurrent(
+                        observation,
+                        recurrent_state,
+                        episode_starts=[episode_start],
+                        deterministic=False,
+                    )
                 )
+                action = action.squeeze(0)
                 action_array = action.numpy().astype(np.float32)
                 assert_finite("training action", action_array)
                 (
@@ -1005,7 +1393,10 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                 next_value: Any = (
                     0.0
                     if terminated
-                    else network.get_value(next_observation)
+                    else network.get_value_recurrent(
+                        next_observation,
+                        next_recurrent_state,
+                    )
                 )
                 buffer.store(
                     state=observation,
@@ -1016,6 +1407,8 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                     next_value=next_value,
                     terminated=terminated,
                     episode_end=episode_end,
+                    recurrent_state=transition_recurrent_state,
+                    episode_start=episode_start,
                 )
 
                 episode_reward += float(reward)
@@ -1034,10 +1427,13 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                     info,
                 )
                 observation = next_observation
+                recurrent_state = next_recurrent_state
+                episode_start = False
 
                 if len(buffer) >= args.rollout_steps:
                     apply_entropy_schedule(ppo, args, episode)
                     last_update_stats = ppo.train_buffer(buffer)
+                    apply_entropy_schedule(ppo, args, episode)
                     for name, stat in last_update_stats.items():
                         assert_finite(name, stat)
                 if episode_end:
@@ -1089,6 +1485,8 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                 metrics_path,
                 {
                     "episode": episode,
+                    "world_index": info.get("world_index"),
+                    "shortest_path": shortest,
                     "episode_reward": episode_reward,
                     "episode_scaled_reward": episode_scaled_reward,
                     **episode_reward_components,
@@ -1099,6 +1497,9 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                     "collision": int(collision),
                     "out_of_bounds": int(
                         bool(info.get("out_of_bounds", False))
+                    ),
+                    "stagnated": int(
+                        bool(info.get("stagnated", False))
                     ),
                     "spl": episode_spl,
                     **last_update_stats,
@@ -1139,6 +1540,7 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
         if len(buffer) > 0:
             apply_entropy_schedule(ppo, args, completed_episode)
             last_update_stats = ppo.train_buffer(buffer)
+            apply_entropy_schedule(ppo, args, completed_episode)
             for name, stat in last_update_stats.items():
                 assert_finite(name, stat)
         save_checkpoint(
@@ -1208,11 +1610,19 @@ def evaluate_shared_policy(
                     total_reward = 0.0
                     info: dict[str, Any] = {}
                     terminated = truncated = False
+                    recurrent_state = network.initial_recurrent_state(1)
+                    episode_start = True
                     for _ in range(args.eval_max_steps):
-                        action, _, _ = network.get_action(
-                            observation,
-                            deterministic=True,
+                        action, _, _, recurrent_state = (
+                            network.get_actions_recurrent(
+                                observation,
+                                recurrent_state,
+                                episode_starts=[episode_start],
+                                deterministic=True,
+                            )
                         )
+                        action = action.squeeze(0)
+                        episode_start = False
                         transition = group.step_batch(
                             {0: action.numpy().astype(np.float32)}
                         )[0]
@@ -1252,11 +1662,14 @@ def _shared_metric_row(
     update_stats: dict[str, float],
     eval_stats: dict[str, float],
     best_eval_metrics: dict[str, float],
+    timing_metrics: dict[str, float | int] | None = None,
 ) -> dict[str, Any]:
     info = state["info"]
     success = bool(info.get("reached_goal", False))
     return {
         "episode": episode,
+        "world_index": info.get("world_index"),
+        "shortest_path": state["shortest"],
         "episode_reward": state["reward"],
         "episode_scaled_reward": state["scaled_reward"],
         **state["reward_components"],
@@ -1266,11 +1679,13 @@ def _shared_metric_row(
         "reached_goal": int(success),
         "collision": int(bool(info.get("collision", False))),
         "out_of_bounds": int(bool(info.get("out_of_bounds", False))),
+        "stagnated": int(bool(info.get("stagnated", False))),
         "spl": calculate_spl(
             success,
             state["shortest"],
             state["path_length"],
         ),
+        **({} if timing_metrics is None else timing_metrics),
         **update_stats,
         **eval_stats,
         "best_eval_success_rate": best_eval_metrics["eval_success_rate"],
@@ -1281,9 +1696,13 @@ def _shared_metric_row(
 
 
 def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
-    """Train a synchronized Martha fleet in one managed Gazebo process."""
-    from .shared_gazebo import SharedGazeboEnvironments
+    """Train a continuously recycled Martha fleet in one Gazebo process."""
+    from .shared_gazebo import (
+        RecyclePlacementUnavailable,
+        SharedGazeboEnvironments,
+    )
 
+    timings = TrainingTimings.start()
     _validate_args(args)
     if args.backend != "gazebo":
         raise ValueError("shared Gazebo training requires backend='gazebo'")
@@ -1294,6 +1713,7 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
     )
     _warn_legacy_reward_config(resume_checkpoint)
     if resume_checkpoint is not None:
+        validate_checkpoint_data(resume_checkpoint, require_optimizer=True)
         _validate_resume_reward_scale(args, resume_checkpoint)
     run_dir = make_run_dir(args)
     metrics_path, last_model_path, best_model_path = _checkpoint_paths(run_dir)
@@ -1305,6 +1725,9 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
     group = SharedGazeboEnvironments(
         count=args.num_envs,
         sim_speed_factor=args.sim_speed_factor,
+        physics_step_size=args.physics_step_size,
+        lidar_samples=args.lidar_samples,
+        training_kinematic=args.training_kinematic,
         show_gui=args.gazebo_gui,
         startup_timeout=args.gazebo_startup_timeout,
         run_directory=run_dir,
@@ -1313,6 +1736,9 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
         environment_kwargs=environment_kwargs(args, resume_checkpoint),
     )
     reference_env = group.reference_env
+    hard_deadline = timings.started_at + args.max_wall_time_hours * 3600.0
+    assignment_deadline = hard_deadline - args.shutdown_grace_minutes * 60.0
+    wall_limit_reached = False
     try:
         network, ppo = build_agent(args, device)
         start_episode = 1
@@ -1337,123 +1763,370 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
         print("Backend: shared Gazebo")
         print(f"Martha robots: {args.num_envs}")
         print("Gazebo servers: 1")
+        print(f"Training kinematics: {args.training_kinematic}")
+        print(f"Physics step: {args.physics_step_size:.4f} s")
+        print(f"LiDAR samples: {args.lidar_samples}")
+        print(f"Map batch: {args.map_batch_episodes} episodes")
+        print(f"Navigation curriculum: {args.curriculum_enabled}")
+        print(
+            "DAgger teacher: "
+            f"{args.teacher_initial_probability:.2f} -> "
+            f"{args.teacher_final_probability:.2f}"
+        )
+        print(f"Hard wall-time limit: {args.max_wall_time_hours:.2f} h")
         print(f"Run directory: {run_dir}")
         print(f"Training points: {points_path}")
         print(f"Observation shape: {reference_env.observation_space.shape}")
         print(f"Action shape: {reference_env.action_space.shape}")
 
         buffers = [RolloutBuffer() for _ in range(args.num_envs)]
+        teacher_steps_since_update = 0
+        policy_steps_since_update = 0
         last_update_stats = dict(_EMPTY_UPDATE_STATS)
         completed_episode = start_episode - 1
+        apply_entropy_schedule(ppo, args, max(1, completed_episode))
         next_evaluation = (
             math.inf
             if args.eval_every == 0
             else (completed_episode // args.eval_every + 1) * args.eval_every
         )
-        while completed_episode < args.episodes:
-            offset = completed_episode % args.num_envs
-            capacity = args.num_envs - offset if offset else args.num_envs
-            round_count = min(capacity, args.episodes - completed_episode)
-            episode_numbers = list(
-                range(completed_episode + 1, completed_episode + round_count + 1)
+
+        def maybe_update_ppo(episode_progress: int) -> None:
+            nonlocal last_update_stats
+            nonlocal policy_steps_since_update
+            nonlocal teacher_steps_since_update
+            if sum(len(buffer) for buffer in buffers) < args.rollout_steps:
+                return
+            update_started = time.monotonic()
+            apply_entropy_schedule(ppo, args, episode_progress)
+            last_update_stats = ppo.train_buffers(buffers)
+            action_count = (
+                teacher_steps_since_update + policy_steps_since_update
             )
-            world_index = training_world_index(
+            last_update_stats["teacher_fraction"] = (
+                teacher_steps_since_update / action_count
+                if action_count > 0
+                else 0.0
+            )
+            teacher_steps_since_update = 0
+            policy_steps_since_update = 0
+            apply_entropy_schedule(ppo, args, episode_progress)
+            timings.ppo_wall_s += time.monotonic() - update_started
+            for name, stat in last_update_stats.items():
+                assert_finite(name, stat)
+
+        while completed_episode < args.episodes:
+            if time.monotonic() >= assignment_deadline:
+                wall_limit_reached = True
+                print(
+                    "Wall-time assignment limit reached before a new map "
+                    "batch; saving the current safe checkpoint.",
+                    flush=True,
+                )
+                break
+            block_start = completed_episode + 1
+            configured_block_start = (
+                (block_start - 1) // args.map_batch_episodes
+            ) * args.map_batch_episodes + 1
+            block_end = min(
+                configured_block_start + args.map_batch_episodes - 1,
+                args.episodes,
+            )
+            initial_count = min(args.num_envs, block_end - block_start + 1)
+            episode_numbers = list(range(block_start, block_start + initial_count))
+            world_indices = training_world_indices_for_round(
                 args,
                 len(reference_env.predefined_maps),
+                episode_numbers,
+            )
+            world_index = world_indices[0]
+            max_goal_distance = curriculum_max_goal_distance(
+                args,
                 episode_numbers[0],
             )
-            assert world_index is not None
             seeds = [episode_seed(args.seed, 0, episode) for episode in episode_numbers]
-            reset_results = group.reset_round(
-                world_index=world_index,
-                seeds=seeds,
-            )
+            reset_started = time.monotonic()
+            if len(set(world_indices)) == len(world_indices):
+                reset_results = group.reset_mixed_round(
+                    world_indices=world_indices,
+                    seeds=seeds,
+                    max_goal_distance=max_goal_distance,
+                )
+            else:
+                reset_results = group.reset_round(
+                    world_index=world_index,
+                    seeds=seeds,
+                    max_goal_distance=max_goal_distance,
+                )
+            timings.reset_wall_s += time.monotonic() - reset_started
             active = {
-                index: _parallel_episode_state(*reset_results[index])
-                for index in range(round_count)
+                index: _parallel_episode_state(
+                    *reset_results[index],
+                    episode=episode_numbers[index],
+                )
+                for index in range(initial_count)
             }
+            for index, state in active.items():
+                state["robot_index"] = index
+                state["recurrent_state"] = network.initial_recurrent_state(1)
+                state["episode_start"] = True
+            next_episode = block_start + initial_count
             finished: dict[int, dict[str, Any]] = {}
+            stop_assigning = False
 
             while active:
+                if time.monotonic() >= hard_deadline:
+                    wall_limit_reached = True
+                    stop_assigning = True
+                    group.park_all()
+                    truncated = _truncate_active_for_wall_limit(active, buffers)
+                    for index, state in truncated.items():
+                        finished[int(state["episode"])] = state
+                    print(
+                        "Hard wall-time limit reached; active episodes were "
+                        "closed as bootstrapped truncations.",
+                        flush=True,
+                    )
+                    break
                 indices = sorted(active)
                 observations = np.stack(
                     [active[index]["observation"] for index in indices]
                 )
-                actions, logprobs, values = network.get_actions(
-                    observations,
-                    deterministic=False,
+                recurrent_state = network.stack_recurrent_states([
+                    active[index]["recurrent_state"] for index in indices
+                ])
+                episode_starts = [
+                    active[index]["episode_start"] for index in indices
+                ]
+                actions, logprobs, values, next_recurrent_state = (
+                    network.get_actions_recurrent(
+                        observations,
+                        recurrent_state,
+                        episode_starts=episode_starts,
+                        deterministic=args.actor_coef == 0.0,
+                    )
                 )
                 action_values = actions.numpy().astype(np.float32)
+                expert_actions = (
+                    {
+                        index: group.environments[index].expert_action()
+                        for index in indices
+                    }
+                    if args.imitation_enabled
+                    else {}
+                )
+                teacher_actions: dict[int, bool] = {}
+                executed_action_values = action_values.copy()
+                for batch_index, index in enumerate(indices):
+                    expert_action = expert_actions.get(index)
+                    use_teacher = bool(
+                        expert_action is not None
+                        and np.random.random()
+                        < teacher_probability_for_episode(
+                            args,
+                            int(active[index]["episode"]),
+                        )
+                    )
+                    teacher_actions[index] = use_teacher
+                    if use_teacher:
+                        executed_action_values[batch_index] = expert_action
+                physics_started = time.monotonic()
                 transitions_by_index = group.step_batch({
-                    index: action_values[batch_index]
+                    index: executed_action_values[batch_index]
                     for batch_index, index in enumerate(indices)
                 })
+                timings.physics_wall_s += time.monotonic() - physics_started
                 transitions = [transitions_by_index[index] for index in indices]
                 next_observations = np.stack(
                     [transition[0] for transition in transitions]
                 )
-                next_values = network.get_value(next_observations).numpy().reshape(-1)
+                next_values = network.get_value_recurrent(
+                    next_observations,
+                    next_recurrent_state,
+                ).numpy().reshape(-1)
+                ended_indices = []
                 for batch_index, environment_index in enumerate(indices):
                     state = active[environment_index]
-                    next_observation, reward, terminated, truncated, info = (
-                        transitions[batch_index]
-                    )
-                    episode_end = bool(terminated or truncated)
-                    buffers[environment_index].store(
-                        state=state["observation"],
-                        action=action_values[batch_index],
+                    expert_action = expert_actions.get(environment_index)
+                    used_teacher = teacher_actions[environment_index]
+                    if used_teacher:
+                        teacher_steps_since_update += 1
+                    else:
+                        policy_steps_since_update += 1
+                    episode_end = _record_shared_transition(
+                        state=state,
+                        transition=transitions[batch_index],
+                        action=executed_action_values[batch_index],
                         logprob=logprobs[batch_index],
-                        reward=scale_reward_for_ppo(reward, args.reward_scale),
                         value=values[batch_index],
-                        next_value=(0.0 if terminated else next_values[batch_index]),
-                        terminated=terminated,
-                        episode_end=episode_end,
+                        next_value=next_values[batch_index],
+                        buffer=buffers[environment_index],
+                        reward_scale=args.reward_scale,
+                        timings=timings,
+                        policy_sample=not used_teacher,
+                        next_recurrent_state=network.recurrent_state_at(
+                            next_recurrent_state,
+                            batch_index,
+                        ),
+                        expert_action=expert_action,
                     )
-                    state["reward"] += float(reward)
-                    state["scaled_reward"] += scale_reward_for_ppo(
-                        reward,
-                        args.reward_scale,
-                    )
-                    _accumulate_reward_components(state["reward_components"], info)
-                    state["length"] += 1
-                    state["previous_position"], state["path_length"] = advance_path(
-                        state["previous_position"],
-                        state["path_length"],
-                        info,
-                    )
-                    state["observation"] = next_observation
                     if episode_end:
-                        state.update(
-                            terminated=bool(terminated),
-                            truncated=bool(truncated),
-                            info=info,
+                        episode = int(state["episode"])
+                        finished[episode] = state
+                        ended_indices.append(environment_index)
+                        del active[environment_index]
+                        timing_values = timings.metric_values()
+                        print(
+                            f"episode={episode:5d}"
+                            f" | robot={environment_index}"
+                            f" | map={reference_env.predefined_maps[int(state['info']['world_index'])].world_name}"
+                            f" | reward={state['reward']:8.2f}"
+                            f" | len={state['length']:3d}"
+                            f" | success={int(bool(state['info'].get('reached_goal', False)))}"
+                            f" | collision={int(bool(state['info'].get('collision', False)))}"
+                            f" | steps/s={timing_values['training_steps_per_second']:.2f}",
+                            flush=True,
                         )
-                        finished[environment_index] = active.pop(environment_index)
+                maybe_update_ppo(completed_episode + len(finished))
+                if time.monotonic() >= assignment_deadline:
+                    stop_assigning = True
+                    wall_limit_reached = True
 
-                if sum(len(buffer) for buffer in buffers) >= args.rollout_steps:
-                    apply_entropy_schedule(
-                        ppo,
-                        args,
-                        completed_episode + len(finished),
+                available = [
+                    index for index in range(args.num_envs) if index not in active
+                ]
+                while (
+                    available
+                    and next_episode <= block_end
+                    and not stop_assigning
+                ):
+                    slot_count = min(len(available), block_end - next_episode + 1)
+                    slots = available[:slot_count]
+                    slot_episodes = list(
+                        range(next_episode, next_episode + slot_count)
                     )
-                    last_update_stats = ppo.train_buffers(buffers)
-                    for name, stat in last_update_stats.items():
-                        assert_finite(name, stat)
+                    assignments = {
+                        index: episode_seed(args.seed, 0, episode)
+                        for index, episode in zip(slots, slot_episodes)
+                    }
 
-            completed_episode += round_count
-            empty_eval = {
-                "eval_mean_reward": math.nan,
-                "eval_success_rate": math.nan,
-                "eval_collision_rate": math.nan,
-                "eval_mean_spl": math.nan,
-            }
+                    passive_indices = sorted(active)
+                    if passive_indices:
+                        passive_observations = np.stack(
+                            [active[index]["observation"] for index in passive_indices]
+                        )
+                        passive_actions = np.zeros(
+                            (len(passive_indices), reference_env.action_space.shape[0]),
+                            dtype=np.float32,
+                        )
+                        passive_recurrent_state = network.stack_recurrent_states([
+                            active[index]["recurrent_state"]
+                            for index in passive_indices
+                        ])
+                        (
+                            passive_logprobs,
+                            passive_values,
+                            passive_next_recurrent_state,
+                        ) = _evaluate_recorded_actions(
+                            network,
+                            passive_observations,
+                            passive_actions,
+                            passive_recurrent_state,
+                        )
+                    else:
+                        passive_actions = np.empty((0, 3), dtype=np.float32)
+                        passive_logprobs = passive_values = torch.empty((0, 1))
+
+                    reset_started = time.monotonic()
+                    try:
+                        recycled, passive = group.reset_slots(
+                            world_index=world_index,
+                            assignments=assignments,
+                            active_indices=passive_indices,
+                            max_goal_distance=max_goal_distance,
+                        )
+                    except RecyclePlacementUnavailable:
+                        # Inactive slots remain parked. Let active robots move
+                        # before retrying the same episode assignments.
+                        timings.reset_wall_s += time.monotonic() - reset_started
+                        break
+                    timings.reset_wall_s += time.monotonic() - reset_started
+                    if passive_indices:
+                        passive_next_observations = np.stack(
+                            [passive[index][0] for index in passive_indices]
+                        )
+                        passive_next_values = network.get_value_recurrent(
+                            passive_next_observations,
+                            passive_next_recurrent_state,
+                        ).numpy().reshape(-1)
+                        for batch_index, environment_index in enumerate(
+                            passive_indices
+                        ):
+                            state = active[environment_index]
+                            episode_end = _record_shared_transition(
+                                state=state,
+                                transition=passive[environment_index],
+                                action=passive_actions[batch_index],
+                                logprob=passive_logprobs[batch_index],
+                                value=passive_values[batch_index],
+                                next_value=passive_next_values[batch_index],
+                                buffer=buffers[environment_index],
+                                reward_scale=args.reward_scale,
+                                timings=timings,
+                                policy_sample=False,
+                                next_recurrent_state=(
+                                    network.recurrent_state_at(
+                                        passive_next_recurrent_state,
+                                        batch_index,
+                                    )
+                                ),
+                            )
+                            if episode_end:
+                                episode = int(state["episode"])
+                                finished[episode] = state
+                                del active[environment_index]
+
+                    for index, episode in zip(slots, slot_episodes):
+                        state = _parallel_episode_state(
+                            *recycled[index],
+                            episode=episode,
+                        )
+                        state["robot_index"] = index
+                        state["recurrent_state"] = (
+                            network.initial_recurrent_state(1)
+                        )
+                        state["episode_start"] = True
+                        active[index] = state
+                    next_episode += slot_count
+                    maybe_update_ppo(completed_episode + len(finished))
+                    if time.monotonic() >= assignment_deadline:
+                        stop_assigning = True
+                        wall_limit_reached = True
+                    available = [
+                        index
+                        for index in range(args.num_envs)
+                        if index not in active
+                    ]
+
+            assigned_last_episode = next_episode - 1
+            completed_episode = assigned_last_episode
+            empty_eval = _empty_eval_stats()
             eval_stats = dict(empty_eval)
-            if completed_episode >= next_evaluation:
+            should_evaluate = (
+                not wall_limit_reached
+                and completed_episode >= next_evaluation
+                and time.monotonic() < assignment_deadline
+            )
+            if should_evaluate:
+                evaluation_started = time.monotonic()
                 eval_stats = evaluate_shared_policy(
                     network,
                     group,
                     args,
                     evaluation_round=completed_episode,
+                )
+                timings.evaluation_wall_s += (
+                    time.monotonic() - evaluation_started
                 )
                 while next_evaluation <= completed_episode:
                     next_evaluation += args.eval_every
@@ -1461,6 +2134,7 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                     best_eval_metrics
                 ):
                     best_eval_metrics = dict(eval_stats)
+                    checkpoint_started = time.monotonic()
                     save_checkpoint(
                         best_model_path,
                         network,
@@ -1470,29 +2144,26 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                         completed_episode,
                         best_eval_metrics,
                     )
+                    timings.checkpoint_wall_s += (
+                        time.monotonic() - checkpoint_started
+                    )
 
-            for index, episode in enumerate(episode_numbers):
-                state = finished[index]
-                row_eval = eval_stats if index == round_count - 1 else empty_eval
+            timing_metrics = timings.metric_values()
+            for episode in sorted(finished):
+                state = finished[episode]
+                row_eval = (
+                    eval_stats if episode == assigned_last_episode else empty_eval
+                )
                 row = _shared_metric_row(
                     episode,
                     state,
                     last_update_stats,
                     row_eval,
                     best_eval_metrics,
+                    timing_metrics,
                 )
                 write_metric(metrics_path, row)
-                print(
-                    f"episode={episode:5d}"
-                    f" | robot={index}"
-                    f" | map={reference_env.predefined_maps[world_index].world_name}"
-                    f" | reward={state['reward']:8.2f}"
-                    f" | len={state['length']:3d}"
-                    f" | success={row['reached_goal']}"
-                    f" | collision={row['collision']}"
-                    f" | SPL={row['spl']:.3f}",
-                    flush=True,
-                )
+            checkpoint_started = time.monotonic()
             save_checkpoint(
                 last_model_path,
                 network,
@@ -1502,12 +2173,27 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                 completed_episode,
                 best_eval_metrics,
             )
+            timings.checkpoint_wall_s += time.monotonic() - checkpoint_started
+            if wall_limit_reached or assigned_last_episode < block_end:
+                break
 
         if sum(len(buffer) for buffer in buffers) > 0:
+            update_started = time.monotonic()
             apply_entropy_schedule(ppo, args, completed_episode)
             last_update_stats = ppo.train_buffers(buffers)
+            action_count = (
+                teacher_steps_since_update + policy_steps_since_update
+            )
+            last_update_stats["teacher_fraction"] = (
+                teacher_steps_since_update / action_count
+                if action_count > 0
+                else 0.0
+            )
+            apply_entropy_schedule(ppo, args, completed_episode)
+            timings.ppo_wall_s += time.monotonic() - update_started
             for name, stat in last_update_stats.items():
                 assert_finite(name, stat)
+        checkpoint_started = time.monotonic()
         save_checkpoint(
             last_model_path,
             network,
@@ -1517,6 +2203,7 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
             completed_episode,
             best_eval_metrics,
         )
+        timings.checkpoint_wall_s += time.monotonic() - checkpoint_started
         if not best_model_path.exists():
             save_checkpoint(
                 best_model_path,
@@ -1534,6 +2221,9 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
     print(f"Metrics: {metrics_path}")
     print(f"Last model: {last_model_path}")
     print(f"Best model: {best_model_path}")
+    print(f"Final throughput: {timings.metric_values()}")
+    if wall_limit_reached:
+        print("Training stopped at the configured wall-time boundary.")
     _generate_training_report(metrics_path)
     return network, ppo
 

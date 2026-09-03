@@ -7,6 +7,7 @@ import copy
 import math
 import os
 from pathlib import Path
+import re
 import tempfile
 from typing import Any
 import xml.etree.ElementTree as ET
@@ -28,6 +29,14 @@ WORLD_ORIGINS = {
 PARKING_Y = -43.0
 PARKING_SPACING = 4.0
 MIN_START_SEPARATION = 0.80
+TRAINING_POINT_COLORS = {
+    "four_rooms": (1.0, 0.15, 0.10, 1.0),
+    "hall": (0.10, 1.0, 0.20, 1.0),
+    "multi": (0.10, 0.35, 1.0, 1.0),
+    "roblab": (1.0, 0.80, 0.05, 1.0),
+    "room": (1.0, 0.10, 0.85, 1.0),
+    "tube": (0.05, 0.95, 1.0, 1.0),
+}
 
 
 @dataclass(frozen=True)
@@ -226,14 +235,75 @@ def sample_round_episodes(
     *,
     robot_count: int,
     min_goal_distance: float,
+    max_goal_distance: float | None = None,
     rng: np.random.Generator,
     distance_field_cache: dict[str, np.ndarray] | None = None,
 ) -> tuple[EpisodeSample, ...]:
     """Sample one collision-free group from a validated point catalog."""
+    if max_goal_distance is not None:
+        if not math.isfinite(max_goal_distance):
+            raise ValueError("max_goal_distance must be finite")
+        if max_goal_distance < min_goal_distance:
+            raise ValueError(
+                "max_goal_distance cannot be smaller than min_goal_distance"
+            )
+    fields = {} if distance_field_cache is None else distance_field_cache
+    routes_by_start: dict[
+        str,
+        list[tuple[TrainingPoint, float]],
+    ] = {}
+    for start in points:
+        routes = []
+        for candidate in _valid_goal_candidates(
+            world_map,
+            points,
+            start,
+            min_goal_distance,
+        ):
+            distance_field = fields.get(candidate.point_id)
+            if distance_field is None:
+                distance_field = world_map.distance_field(
+                    candidate.x,
+                    candidate.y,
+                )
+                fields[candidate.point_id] = distance_field
+            shortest_path = world_map.path_distance(
+                start.x,
+                start.y,
+                distance_field,
+            )
+            if (
+                math.isfinite(shortest_path)
+                and shortest_path >= min_goal_distance
+                and (
+                    max_goal_distance is None
+                    or shortest_path <= max_goal_distance
+                )
+            ):
+                routes.append((candidate, shortest_path))
+        if routes:
+            routes_by_start[start.point_id] = routes
+
+    eligible_starts = [
+        point for point in points if point.point_id in routes_by_start
+    ]
+    if len(eligible_starts) < robot_count:
+        raise RuntimeError(
+            f"world {world_map.world_name} has only {len(eligible_starts)} "
+            f"starts with a route in [{min_goal_distance}, "
+            f"{max_goal_distance}] m; need {robot_count}"
+        )
+
     starts: list[TrainingPoint] | None = None
     for _ in range(500):
-        indices = rng.choice(len(points), size=robot_count, replace=False)
-        candidate_starts = [points[int(index)] for index in indices]
+        indices = rng.choice(
+            len(eligible_starts),
+            size=robot_count,
+            replace=False,
+        )
+        candidate_starts = [
+            eligible_starts[int(index)] for index in indices
+        ]
         if _starts_are_separated(candidate_starts):
             starts = candidate_starts
             break
@@ -243,34 +313,10 @@ def sample_round_episodes(
         )
 
     offset_x, offset_y = origin
-    fields = {} if distance_field_cache is None else distance_field_cache
     episodes = []
     for start in starts:
-        candidates = _valid_goal_candidates(
-            world_map,
-            points,
-            start,
-            min_goal_distance,
-        )
-        if not candidates:
-            raise RuntimeError(
-                f"point {start.point_id} has no valid goal in {world_map.world_name}"
-            )
-        goal = candidates[int(rng.integers(len(candidates)))]
-        distance_field = fields.get(goal.point_id)
-        if distance_field is None:
-            distance_field = world_map.distance_field(goal.x, goal.y)
-            fields[goal.point_id] = distance_field
-        shortest_path = world_map.path_distance(
-            start.x,
-            start.y,
-            distance_field,
-        )
-        if not math.isfinite(shortest_path) or shortest_path < min_goal_distance:
-            raise RuntimeError(
-                f"invalid cached route {start.point_id}->{goal.point_id} "
-                f"in {world_map.world_name}"
-            )
+        routes = routes_by_start[start.point_id]
+        goal, shortest_path = routes[int(rng.integers(len(routes)))]
         yaw = start.yaw
         if yaw is None:
             yaw = float(rng.uniform(-math.pi, math.pi))
@@ -361,6 +407,134 @@ def create_combined_training_world(
         target.unlink(missing_ok=True)
         raise
     return target
+
+
+def _marker_identifier(value: str) -> str:
+    """Return a readable SDF-safe fragment for a point marker name."""
+    cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", str(value)).strip("_")
+    return cleaned or "unnamed"
+
+
+def _append_training_point_markers(
+    world: ET.Element,
+    catalog: dict[str, tuple[TrainingPoint, ...]],
+    world_names: tuple[str, ...],
+    origins: dict[str, tuple[float, float]],
+) -> None:
+    """Append collision-free visual markers at the requested catalog points."""
+    world.append(
+        ET.Comment(" Visual-only training point markers; colors are one per map. ")
+    )
+    for world_name in world_names:
+        offset_x, offset_y = origins[world_name]
+        rgba = TRAINING_POINT_COLORS[world_name]
+        color = " ".join(f"{component:.6g}" for component in rgba)
+        for index, point in enumerate(catalog[world_name], start=1):
+            marker = ET.SubElement(
+                world,
+                "model",
+                {
+                    "name": (
+                        f"training_point__{world_name}__{index:02d}__"
+                        f"{_marker_identifier(point.point_id)}"
+                    )
+                },
+            )
+            ET.SubElement(marker, "static").text = "true"
+            ET.SubElement(marker, "pose").text = (
+                f"{point.x + offset_x:.9g} "
+                f"{point.y + offset_y:.9g} 0.6 0 0 0"
+            )
+            link = ET.SubElement(marker, "link", {"name": "marker"})
+            visual = ET.SubElement(link, "visual", {"name": "spawn_point"})
+            ET.SubElement(visual, "cast_shadows").text = "false"
+            geometry = ET.SubElement(visual, "geometry")
+            cylinder = ET.SubElement(geometry, "cylinder")
+            ET.SubElement(cylinder, "radius").text = "0.16"
+            ET.SubElement(cylinder, "length").text = "1.2"
+            material = ET.SubElement(visual, "material")
+            ET.SubElement(material, "ambient").text = color
+            ET.SubElement(material, "diffuse").text = color
+            ET.SubElement(material, "emissive").text = color
+
+
+def create_training_points_visualization_world(
+    world_paths: tuple[Path, ...],
+    catalog: dict[str, tuple[TrainingPoint, ...]],
+    *,
+    selected_world: str | None = None,
+    directory: str | Path | None = None,
+) -> Path:
+    """Create one selected map, or all maps, with catalog points highlighted."""
+    missing = [name for name in TRAINING_WORLD_NAMES if name not in catalog]
+    if missing:
+        raise ValueError(f"training point catalog is missing worlds: {missing}")
+
+    paths_by_name = {path.stem: path for path in world_paths}
+    temporary_source: Path | None = None
+    if selected_world is None:
+        temporary_source = create_combined_training_world(
+            world_paths,
+            directory=directory,
+        )
+        tree = ET.parse(temporary_source)
+        shown_worlds = TRAINING_WORLD_NAMES
+        origins = WORLD_ORIGINS
+        camera_height = 85.0
+    else:
+        selected_world = str(selected_world).strip()
+        if selected_world not in TRAINING_WORLD_NAMES:
+            choices = ", ".join(TRAINING_WORLD_NAMES)
+            raise ValueError(f"map must be one of: {choices}")
+        source_path = paths_by_name.get(selected_world)
+        if source_path is None:
+            raise FileNotFoundError(f"world file is unavailable for {selected_world}")
+        tree = ET.parse(source_path)
+        shown_worlds = (selected_world,)
+        origins = {selected_world: (0.0, 0.0)}
+        camera_height = 34.0
+
+    target: Path | None = None
+    try:
+        world = tree.getroot().find("world")
+        if world is None:
+            raise ValueError("training point visualization SDF has no world element")
+        if selected_world is not None:
+            world.set("name", f"{selected_world}_training_points")
+            for element in list(world.findall("model")):
+                if element.get("name") == "goal_point":
+                    world.remove(element)
+            for tag in ("gui", "state"):
+                for element in list(world.findall(tag)):
+                    world.remove(element)
+
+        _append_training_point_markers(world, catalog, shown_worlds, origins)
+
+        gui = ET.SubElement(world, "gui", {"fullscreen": "0"})
+        camera = ET.SubElement(gui, "camera", {"name": "training_points_camera"})
+        ET.SubElement(camera, "pose").text = (
+            f"0 0 {camera_height:.9g} 0 1.5708 0"
+        )
+        ET.SubElement(camera, "view_controller").text = "orbit"
+        ET.SubElement(camera, "projection_type").text = "perspective"
+
+        target_directory = None if directory is None else str(directory)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix="martha_training_points_",
+            suffix=".world",
+            dir=target_directory,
+        )
+        os.close(descriptor)
+        target = Path(temporary_name)
+        tree.write(target, encoding="utf-8", xml_declaration=True)
+        return target
+    except Exception:
+        if target is not None:
+            target.unlink(missing_ok=True)
+        raise
+    finally:
+        if temporary_source is not None:
+            temporary_source.unlink(missing_ok=True)
 
 
 def shuffled_world_index(seed: int, round_index: int, world_count: int) -> int:

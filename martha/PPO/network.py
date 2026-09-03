@@ -1,6 +1,7 @@
 """Paper-inspired multi-branch actor-critic network for Martha PPO."""
 
 import math
+from typing import NamedTuple
 
 import torch
 import torch.nn as nn
@@ -16,16 +17,71 @@ from .observations import (
 
 
 FUSED_FEATURE_SIZE = 384
+RECURRENT_HIDDEN_SIZE = 128
+RECURRENT_NUM_LAYERS = 1
+
+# Select which part of the canonical four-frame observation is encoded before
+# the LSTM. Use "present" to encode only the newest frame, or "history" to
+# preserve the original four-frame temporal encoder. Changing this value
+# requires training a new checkpoint.
+OBSERVATION_ENCODER_MODE = "present"
+SUPPORTED_OBSERVATION_ENCODER_MODES = ("present", "history")
+
+
+def _validate_observation_encoder_mode(mode: str) -> str:
+    """Return a supported observation encoder mode."""
+    normalized = str(mode).strip().lower()
+    if normalized not in SUPPORTED_OBSERVATION_ENCODER_MODES:
+        choices = ", ".join(SUPPORTED_OBSERVATION_ENCODER_MODES)
+        raise ValueError(
+            f"observation encoder mode must be one of: {choices}"
+        )
+    return normalized
+
+
+def policy_architecture_for_mode(mode: str) -> str:
+    """Return the checkpoint architecture name for one encoder mode."""
+    mode = _validate_observation_encoder_mode(mode)
+    if mode == "present":
+        return "present_multibranch_lstm"
+    return "temporal_multibranch_lstm"
+
+
+POLICY_ARCHITECTURE = policy_architecture_for_mode(
+    OBSERVATION_ENCODER_MODE
+)
+
+
+class RecurrentState(NamedTuple):
+    """Independent actor and critic LSTM state."""
+
+    actor_h: torch.Tensor
+    actor_c: torch.Tensor
+    critic_h: torch.Tensor
+    critic_c: torch.Tensor
 
 
 class NavigationFeatureExtractor(nn.Module):
-    """Encode temporal LiDAR, goal and velocity branches independently."""
+    """Encode present or historical navigation inputs by modality."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        observation_encoder_mode: str | None = None,
+    ) -> None:
         super().__init__()
+        self.observation_encoder_mode = _validate_observation_encoder_mode(
+            OBSERVATION_ENCODER_MODE
+            if observation_encoder_mode is None
+            else observation_encoder_mode
+        )
+        self.encoded_frame_count = (
+            1
+            if self.observation_encoder_mode == "present"
+            else OBSERVATION_HISTORY_FRAMES
+        )
         self.laser_branch = nn.Sequential(
             nn.Conv1d(
-                OBSERVATION_HISTORY_FRAMES,
+                self.encoded_frame_count,
                 16,
                 kernel_size=6,
                 stride=3,
@@ -38,15 +94,15 @@ class NavigationFeatureExtractor(nn.Module):
             nn.ReLU(),
         )
         self.orientation_branch = nn.Sequential(
-            nn.Linear(OBSERVATION_HISTORY_FRAMES * 2, 32),
+            nn.Linear(self.encoded_frame_count * 2, 32),
             nn.ReLU(),
         )
         self.distance_branch = nn.Sequential(
-            nn.Linear(OBSERVATION_HISTORY_FRAMES, 16),
+            nn.Linear(self.encoded_frame_count, 16),
             nn.ReLU(),
         )
         self.velocity_branch = nn.Sequential(
-            nn.Linear(OBSERVATION_HISTORY_FRAMES * 3, 32),
+            nn.Linear(self.encoded_frame_count * 3, 32),
             nn.ReLU(),
         )
         self.fusion = nn.Sequential(
@@ -65,6 +121,8 @@ class NavigationFeatureExtractor(nn.Module):
             OBSERVATION_HISTORY_FRAMES,
             OBSERVATION_FRAME_SIZE,
         )
+        if self.observation_encoder_mode == "present":
+            frames = frames[:, -1:, :]
         laser = frames[:, :, :LASER_SECTORS]
         distance = frames[:, :, LASER_SECTORS]
         orientation = frames[:, :, LASER_SECTORS + 1:LASER_SECTORS + 3]
@@ -83,44 +141,214 @@ class NavigationFeatureExtractor(nn.Module):
 
 
 class ActorCritic(nn.Module):
-    """Independent Gaussian actor and scalar critic navigation networks."""
+    """Independent recurrent Gaussian actor and scalar critic networks."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.tanh_epsilon = 1e-6
-        self.actor_feature_extractor = NavigationFeatureExtractor()
-        self.actor_mean = nn.Linear(FUSED_FEATURE_SIZE, ACTION_SIZE)
-        self.actor_logstd = nn.Parameter(
-            torch.full((1, ACTION_SIZE), math.log(0.5))
+        self.observation_encoder_mode = _validate_observation_encoder_mode(
+            OBSERVATION_ENCODER_MODE
         )
-        self.critic_feature_extractor = NavigationFeatureExtractor()
-        self.critic_value = nn.Linear(FUSED_FEATURE_SIZE, 1)
+        self.tanh_epsilon = 1e-6
+        self.actor_feature_extractor = NavigationFeatureExtractor(
+            self.observation_encoder_mode
+        )
+        self.actor_lstm = nn.LSTM(
+            FUSED_FEATURE_SIZE,
+            RECURRENT_HIDDEN_SIZE,
+            num_layers=RECURRENT_NUM_LAYERS,
+            batch_first=True,
+        )
+        self.actor_mean = nn.Linear(RECURRENT_HIDDEN_SIZE, ACTION_SIZE)
+        self.actor_logstd = nn.Parameter(
+            torch.full((1, ACTION_SIZE), math.log(0.4))
+        )
+        self.critic_feature_extractor = NavigationFeatureExtractor(
+            self.observation_encoder_mode
+        )
+        self.critic_lstm = nn.LSTM(
+            FUSED_FEATURE_SIZE,
+            RECURRENT_HIDDEN_SIZE,
+            num_layers=RECURRENT_NUM_LAYERS,
+            batch_first=True,
+        )
+        self.critic_value = nn.Linear(RECURRENT_HIDDEN_SIZE, 1)
 
     def actor_parameters(self):
         """Yield only policy parameters for independent gradient clipping."""
         yield from self.actor_feature_extractor.parameters()
+        yield from self.actor_lstm.parameters()
         yield from self.actor_mean.parameters()
         yield self.actor_logstd
 
     def critic_parameters(self):
         """Yield only value-function parameters."""
         yield from self.critic_feature_extractor.parameters()
+        yield from self.critic_lstm.parameters()
         yield from self.critic_value.parameters()
 
-    def _distribution(self, state):
-        actor_features = self.actor_feature_extractor(state)
-        mean = self.actor_mean(actor_features)
+    def clamp_policy_std(self, maximum: float) -> None:
+        """Apply an in-place ceiling to the learned global action STD."""
+        maximum = float(maximum)
+        if not math.isfinite(maximum) or maximum <= 0.0:
+            raise ValueError("maximum policy STD must be finite and positive")
+        with torch.no_grad():
+            self.actor_logstd.clamp_(max=math.log(maximum))
+
+    def initial_recurrent_state(
+        self,
+        batch_size: int,
+        *,
+        device: torch.device | None = None,
+    ) -> RecurrentState:
+        """Return zeroed actor/critic memory for a new episode."""
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if device is None:
+            device = next(self.parameters()).device
+        shape = (RECURRENT_NUM_LAYERS, int(batch_size), RECURRENT_HIDDEN_SIZE)
+        zeros = [torch.zeros(shape, dtype=torch.float32, device=device) for _ in range(4)]
+        return RecurrentState(*zeros)
+
+    @staticmethod
+    def stack_recurrent_states(states: list[RecurrentState]) -> RecurrentState:
+        """Join single-environment memories into one environment batch."""
+        if not states:
+            raise ValueError("at least one recurrent state is required")
+        return RecurrentState(
+            *(torch.cat(values, dim=1) for values in zip(*states))
+        )
+
+    @staticmethod
+    def recurrent_state_at(
+        state: RecurrentState,
+        index: int,
+    ) -> RecurrentState:
+        """Select one environment while retaining the LSTM batch axis."""
+        return RecurrentState(
+            *(value[:, index:index + 1].detach() for value in state)
+        )
+
+    def _validate_recurrent_state(
+        self,
+        state: RecurrentState,
+        batch_size: int,
+    ) -> None:
+        expected = (
+            RECURRENT_NUM_LAYERS,
+            batch_size,
+            RECURRENT_HIDDEN_SIZE,
+        )
+        if not isinstance(state, RecurrentState):
+            raise TypeError("recurrent_state must be a RecurrentState")
+        if any(tuple(value.shape) != expected for value in state):
+            raise ValueError(f"recurrent state tensors must have shape {expected}")
+
+    @staticmethod
+    def _reset_memory(
+        memory: tuple[torch.Tensor, torch.Tensor],
+        episode_start: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        keep = (1.0 - episode_start).view(1, -1, 1)
+        return memory[0] * keep, memory[1] * keep
+
+    def _run_recurrent_branch(
+        self,
+        features: torch.Tensor,
+        recurrent: nn.LSTM,
+        memory: tuple[torch.Tensor, torch.Tensor],
+        episode_starts: torch.Tensor,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        outputs = []
+        for step in range(features.shape[1]):
+            memory = self._reset_memory(memory, episode_starts[:, step])
+            output, memory = recurrent(features[:, step:step + 1], memory)
+            outputs.append(output)
+        return torch.cat(outputs, dim=1), memory
+
+    def forward_recurrent(
+        self,
+        states: torch.Tensor,
+        recurrent_state: RecurrentState | None = None,
+        episode_starts: torch.Tensor | None = None,
+    ) -> tuple[Normal, torch.Tensor, RecurrentState]:
+        """Evaluate an ordered ``[batch, time, observation]`` sequence."""
+        if states.ndim == 2:
+            states = states.unsqueeze(1)
+        if states.ndim != 3 or states.shape[2] != OBSERVATION_SIZE:
+            raise ValueError(
+                "states must have shape "
+                f"[B, T, {OBSERVATION_SIZE}] or [B, {OBSERVATION_SIZE}]"
+            )
+        batch_size, sequence_length, _ = states.shape
+        if sequence_length <= 0:
+            raise ValueError("recurrent sequence cannot be empty")
+        if recurrent_state is None:
+            recurrent_state = self.initial_recurrent_state(
+                batch_size,
+                device=states.device,
+            )
+        self._validate_recurrent_state(recurrent_state, batch_size)
+        recurrent_state = RecurrentState(
+            *(value.to(device=states.device, dtype=states.dtype) for value in recurrent_state)
+        )
+        if episode_starts is None:
+            episode_starts = torch.zeros(
+                (batch_size, sequence_length, 1),
+                dtype=states.dtype,
+                device=states.device,
+            )
+        else:
+            episode_starts = episode_starts.to(
+                device=states.device,
+                dtype=states.dtype,
+            )
+            if episode_starts.ndim == 2:
+                episode_starts = episode_starts.unsqueeze(-1)
+            if episode_starts.shape != (batch_size, sequence_length, 1):
+                raise ValueError(
+                    "episode_starts must have shape "
+                    f"({batch_size}, {sequence_length}, 1)"
+                )
+
+        flattened = states.reshape(batch_size * sequence_length, OBSERVATION_SIZE)
+        actor_features = self.actor_feature_extractor(flattened).reshape(
+            batch_size,
+            sequence_length,
+            FUSED_FEATURE_SIZE,
+        )
+        critic_features = self.critic_feature_extractor(flattened).reshape(
+            batch_size,
+            sequence_length,
+            FUSED_FEATURE_SIZE,
+        )
+        actor_output, actor_memory = self._run_recurrent_branch(
+            actor_features,
+            self.actor_lstm,
+            (recurrent_state.actor_h, recurrent_state.actor_c),
+            episode_starts,
+        )
+        critic_output, critic_memory = self._run_recurrent_branch(
+            critic_features,
+            self.critic_lstm,
+            (recurrent_state.critic_h, recurrent_state.critic_c),
+            episode_starts,
+        )
+        mean = self.actor_mean(actor_output)
         logstd = torch.clamp(self.actor_logstd, min=-5.0, max=2.0)
         std = torch.exp(logstd).expand_as(mean)
-        return Normal(mean, std)
-
-    def _value(self, state):
-        critic_features = self.critic_feature_extractor(state)
-        return self.critic_value(critic_features)
+        values = self.critic_value(critic_output)
+        next_state = RecurrentState(
+            actor_memory[0],
+            actor_memory[1],
+            critic_memory[0],
+            critic_memory[1],
+        )
+        return Normal(mean, std), values, next_state
 
     def forward(self, state):
-        """Return the independent policy distribution and value estimate."""
-        return self._distribution(state), self._value(state)
+        """Evaluate independent samples with zeroed recurrent memory."""
+        dist, values, _ = self.forward_recurrent(state)
+        return Normal(dist.mean[:, 0], dist.stddev[:, 0]), values[:, 0]
 
     def _squashed_log_prob(self, dist, action):
         """Return the Jacobian-corrected probability of a squashed action."""
@@ -137,14 +365,31 @@ class ActorCritic(nn.Module):
         return gaussian_log_prob - tanh_correction
 
     def evaluate_actions(self, states, actions):
-        """Recompute log-probabilities, entropy and values for PPO."""
+        """Recompute independent-sample PPO values with zeroed memory."""
         dist, values = self.forward(states)
         log_probs = self._squashed_log_prob(dist, actions)
         entropy = dist.entropy().sum(dim=-1, keepdim=True)
         return log_probs, entropy, values
 
+    def evaluate_action_sequences(
+        self,
+        states,
+        actions,
+        recurrent_state,
+        episode_starts,
+    ):
+        """Recompute PPO values without destroying temporal ordering."""
+        dist, values, _ = self.forward_recurrent(
+            states,
+            recurrent_state,
+            episode_starts,
+        )
+        log_probs = self._squashed_log_prob(dist, actions)
+        entropy = dist.entropy().sum(dim=-1, keepdim=True)
+        return log_probs, entropy, values
+
     def get_value(self, state):
-        """Calculate the value used for bootstrap or evaluation."""
+        """Calculate a value with zeroed recurrent memory."""
         device = next(self.parameters()).device
         state = torch.as_tensor(state, dtype=torch.float32, device=device)
         if state.ndim == 1:
@@ -153,8 +398,18 @@ class ActorCritic(nn.Module):
             _, value = self.forward(state)
         return value.cpu()
 
+    def get_value_recurrent(self, states, recurrent_state):
+        """Calculate bootstrap values using the preceding trajectory memory."""
+        device = next(self.parameters()).device
+        states = torch.as_tensor(states, dtype=torch.float32, device=device)
+        if states.ndim == 1:
+            states = states.unsqueeze(0)
+        with torch.no_grad():
+            _, values, _ = self.forward_recurrent(states, recurrent_state)
+        return values[:, 0].cpu()
+
     def get_actions(self, states, deterministic=False):
-        """Return bounded actions, log-probabilities and values for a batch."""
+        """Return independent actions with zeroed recurrent memory."""
         device = next(self.parameters()).device
         states = torch.as_tensor(states, dtype=torch.float32, device=device)
         if states.ndim == 1:
@@ -170,6 +425,47 @@ class ActorCritic(nn.Module):
             actions = torch.tanh(raw_actions)
             log_probs = self._squashed_log_prob(dist, actions)
         return actions.cpu(), log_probs.cpu(), values.cpu()
+
+    def get_actions_recurrent(
+        self,
+        states,
+        recurrent_state,
+        *,
+        episode_starts=None,
+        deterministic=False,
+    ):
+        """Return actions and updated memory for an environment batch."""
+        device = next(self.parameters()).device
+        states = torch.as_tensor(states, dtype=torch.float32, device=device)
+        if states.ndim == 1:
+            states = states.unsqueeze(0)
+        if states.ndim != 2 or states.shape[1] != OBSERVATION_SIZE:
+            raise ValueError(
+                f"states must have shape [N, {OBSERVATION_SIZE}]"
+            )
+        if episode_starts is not None:
+            episode_starts = torch.as_tensor(
+                episode_starts,
+                dtype=torch.float32,
+                device=device,
+            ).reshape(states.shape[0], 1, 1)
+        with torch.no_grad():
+            dist, values, next_state = self.forward_recurrent(
+                states,
+                recurrent_state,
+                episode_starts,
+            )
+            dist = Normal(dist.mean[:, 0], dist.stddev[:, 0])
+            values = values[:, 0]
+            raw_actions = dist.mean if deterministic else dist.sample()
+            actions = torch.tanh(raw_actions)
+            log_probs = self._squashed_log_prob(dist, actions)
+        return (
+            actions.cpu(),
+            log_probs.cpu(),
+            values.cpu(),
+            RecurrentState(*(value.detach() for value in next_state)),
+        )
 
     def get_action(self, state, deterministic=False):
         """Return one continuous action bounded to ``[-1, 1]``."""

@@ -17,6 +17,7 @@ DEFAULT_RUNS_DIRECTORY = (
 )
 
 REWARD_COMPONENTS = (
+    ("reward_step", "Costo temporal"),
     ("reward_distance", "Distancia"),
     ("reward_orientation", "Orientación"),
     ("reward_shortest_distance", "Récord de cercanía"),
@@ -144,6 +145,7 @@ def _write_summary(
         ("reached_goal", "Tasa de éxito", True),
         ("collision", "Tasa de colisión", True),
         ("out_of_bounds", "Fuera de límites", True),
+        ("stagnated", "Tasa de estancamiento", True),
         ("truncated", "Tasa de truncamiento", True),
         ("spl", "SPL", False),
         ("episode_length", "Duración", False),
@@ -168,6 +170,38 @@ def _write_summary(
             f"- {label}: {_format_change(*means[name], percent=percent)}"
         )
 
+    elapsed_values = metrics.get("elapsed_wall_s")
+    throughput_values = metrics.get("training_steps_per_second")
+    if elapsed_values is not None and throughput_values is not None:
+        finite_elapsed = elapsed_values[np.isfinite(elapsed_values)]
+        finite_throughput = throughput_values[np.isfinite(throughput_values)]
+        if finite_elapsed.size and finite_throughput.size:
+            elapsed = float(finite_elapsed[-1])
+            lines.extend(
+                (
+                    "",
+                    "Rendimiento acumulado",
+                    f"- Tiempo de pared: {elapsed / 3600.0:.2f} h",
+                    f"- Pasos de entrenamiento/s: {finite_throughput[-1]:.2f}",
+                )
+            )
+            for name, label in (
+                ("physics_wall_s", "Física"),
+                ("reset_wall_s", "Reset"),
+                ("ppo_wall_s", "PPO"),
+                ("evaluation_wall_s", "Evaluación"),
+                ("checkpoint_wall_s", "Checkpoint"),
+            ):
+                values = metrics.get(name)
+                if values is None:
+                    continue
+                finite = values[np.isfinite(values)]
+                if finite.size:
+                    lines.append(
+                        f"- {label}: {finite[-1]:.1f} s "
+                        f"({100.0 * finite[-1] / max(elapsed, 1e-9):.1f}%)"
+                    )
+
     lines.extend(("", "Componentes medios de recompensa (última ventana)"))
     for name, label in REWARD_COMPONENTS:
         value = _window_mean(_values(metrics, name), effective, first=False)
@@ -179,6 +213,7 @@ def _write_summary(
     success = means["reached_goal"][1]
     collision = means["collision"][1]
     out_of_bounds = means["out_of_bounds"][1]
+    stagnated = means["stagnated"][1]
     truncated = means["truncated"][1]
     explained = _window_mean(
         _values(metrics, "explained_variance"), effective, first=False
@@ -203,6 +238,11 @@ def _write_summary(
         recommendations.append(
             "Hay salidas del mapa: revisa la geometría, los resets y el margen "
             "de los límites antes de cambiar PPO."
+        )
+    if np.isfinite(stagnated) and stagnated > 0.50:
+        recommendations.append(
+            "Más de 50% termina por estancamiento: la política evita actuar; "
+            "revisa la señal de progreso y la media de las acciones."
         )
     if np.isfinite(success) and success < 0.05:
         recommendations.append(
@@ -281,6 +321,7 @@ def generate_training_report(
         ("collision", "Colisión"),
         ("truncated", "Truncado"),
         ("out_of_bounds", "Fuera del mapa"),
+        ("stagnated", "Estancado"),
     ):
         _plot_smoothed(axes[0, 1], episodes, _values(metrics, name), label, window)
     axes[0, 1].set_title("Resultados por episodio")

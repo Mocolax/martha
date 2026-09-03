@@ -32,7 +32,11 @@ from .actions import (
     scale_action,
 )
 from .observations import (
+    DEFAULT_GOAL_DISTANCE_SCALE,
+    GOAL_DISTANCE_ENCODING,
+    GOAL_GUIDANCE_MODE,
     LASER_SECTORS,
+    LOCAL_WAYPOINT_DISTANCE,
     OBSERVATION_FRAME_SIZE,
     OBSERVATION_HISTORY_FRAMES,
     OBSERVATION_HISTORY_SECONDS,
@@ -40,6 +44,7 @@ from .observations import (
     ObservationHistory,
     build_observation_frame,
     goal_features,
+    local_waypoint_features,
     reduce_laser_scan,
 )
 from .reward import (
@@ -47,6 +52,7 @@ from .reward import (
     RewardState,
     calculate_reward,
     empty_reward_components,
+    update_stagnation,
     validate_reward_config,
 )
 from .world_map import EpisodeSample, WorldMap, discover_worlds
@@ -111,8 +117,7 @@ except Exception as exc:  # pragma: no cover - depends on the host environment.
     _NodeBase = object
 
 
-POLICY_CONTRACT_VERSION = 2
-POLICY_ARCHITECTURE = "temporal_multibranch"
+POLICY_CONTRACT_VERSION = 7
 PPO_SCENARIO_ENTITY_PREFIX = "martha_ppo_s"
 PPO_GOAL_ENTITY_PREFIX = "martha_ppo_goal_"
 PPO_GOAL_ENTITY_NAME = "martha_ppo_goal_current"
@@ -122,22 +127,36 @@ GAZEBO_CONTROL_SERVICE_ATTEMPTS = 3
 
 def build_policy_contract(
     scan_range_max: float,
-    max_goal_distance: float,
+    goal_distance_scale: float,
     action_limits: ActionLimits,
 ) -> dict[str, Any]:
     """Return the complete policy architecture and scaling contract."""
+    # Imported lazily so geometry and reward tests can still import this module
+    # on hosts that do not have PyTorch installed.
+    from .network import (
+        POLICY_ARCHITECTURE,
+        RECURRENT_HIDDEN_SIZE,
+        RECURRENT_NUM_LAYERS,
+    )
+
     return {
         "version": POLICY_CONTRACT_VERSION,
         "observation_size": OBSERVATION_SIZE,
         "action_size": ACTION_SIZE,
         "laser_sectors": LASER_SECTORS,
         "architecture": POLICY_ARCHITECTURE,
+        "recurrent_type": "lstm",
+        "recurrent_hidden_size": RECURRENT_HIDDEN_SIZE,
+        "recurrent_num_layers": RECURRENT_NUM_LAYERS,
         "observation_layout": "frame_major",
         "observation_frame_size": OBSERVATION_FRAME_SIZE,
         "observation_history_frames": OBSERVATION_HISTORY_FRAMES,
         "observation_history_seconds": OBSERVATION_HISTORY_SECONDS,
         "scan_range_max": float(scan_range_max),
-        "max_goal_distance": float(max_goal_distance),
+        "goal_distance_encoding": GOAL_DISTANCE_ENCODING,
+        "goal_guidance_mode": GOAL_GUIDANCE_MODE,
+        "local_waypoint_distance": LOCAL_WAYPOINT_DISTANCE,
+        "goal_distance_scale": float(goal_distance_scale),
         "action_limits": {
             "max_vx": float(action_limits.max_vx),
             "max_vy": float(action_limits.max_vy),
@@ -151,7 +170,7 @@ def scan_hits_footprint(
     normalized_sectors: Iterable[float],
     scan_range_max: float,
     *,
-    lidar_offset_x: float = 0.255,
+    lidar_offset_x: float = 0.2325,
     footprint_half_x: float = 0.29,
     footprint_half_y: float = 0.255,
     safety_margin: float = 0.05,
@@ -164,6 +183,36 @@ def scan_hits_footprint(
     ray/rectangle test accounts for that offset and samples both edges of each
     reduced angular sector conservatively.
     """
+    return footprint_scan_hit(
+        normalized_sectors,
+        scan_range_max,
+        lidar_offset_x=lidar_offset_x,
+        footprint_half_x=footprint_half_x,
+        footprint_half_y=footprint_half_y,
+        safety_margin=safety_margin,
+    ) is not None
+
+
+@dataclass(frozen=True)
+class FootprintScanHit:
+    """One reduced LiDAR sector entering Martha's inflated footprint."""
+
+    sector_index: int
+    angle_radians: float
+    measured_range: float
+    threshold: float
+
+
+def footprint_scan_hit(
+    normalized_sectors: Iterable[float],
+    scan_range_max: float,
+    *,
+    lidar_offset_x: float = 0.2325,
+    footprint_half_x: float = 0.29,
+    footprint_half_y: float = 0.255,
+    safety_margin: float = 0.05,
+) -> FootprintScanHit | None:
+    """Return the first sector entering the footprint, with diagnostics."""
     sectors = np.asarray(tuple(normalized_sectors), dtype=np.float32)
     if sectors.shape != (LASER_SECTORS,) or not np.isfinite(sectors).all():
         raise ValueError("canonical laser sectors must be a finite 36-vector")
@@ -210,8 +259,13 @@ def scan_hits_footprint(
             boundary_distance(center + 0.5 * sector_width),
         ) + safety_margin
         if float(measured_range) <= threshold:
-            return True
-    return False
+            return FootprintScanHit(
+                sector_index=index,
+                angle_radians=center,
+                measured_range=float(measured_range),
+                threshold=float(threshold),
+            )
+    return None
 
 
 def external_contact_models(
@@ -323,6 +377,93 @@ def _rotate_vector_by_quaternion(
 
 
 @dataclass(frozen=True)
+class RosStreamActivity:
+    """Read-only counters for the ROS streams required by Gazebo training."""
+
+    scan_sequence: int
+    odometry_sequence: int
+    ground_truth_sequence: int
+    contact_sequence: int
+    scan_stamp_ns: int
+    odometry_stamp_ns: int
+
+    def missing_after(
+        self,
+        baseline: "RosStreamActivity",
+        *,
+        require_contact: bool,
+    ) -> tuple[str, ...]:
+        """Describe streams that have not advanced beyond ``baseline``."""
+        missing = []
+        if self.scan_sequence <= baseline.scan_sequence:
+            missing.append(
+                "scan"
+                f"(sequence={self.scan_sequence}, need>{baseline.scan_sequence}, "
+                f"stamp_ns={self.scan_stamp_ns})"
+            )
+        if self.odometry_sequence <= baseline.odometry_sequence:
+            missing.append(
+                "odometry"
+                f"(sequence={self.odometry_sequence}, "
+                f"need>{baseline.odometry_sequence}, "
+                f"stamp_ns={self.odometry_stamp_ns})"
+            )
+        if self.ground_truth_sequence <= baseline.ground_truth_sequence:
+            missing.append(
+                "model_state"
+                f"(sequence={self.ground_truth_sequence}, "
+                f"need>{baseline.ground_truth_sequence})"
+            )
+        if require_contact and self.contact_sequence <= baseline.contact_sequence:
+            missing.append(
+                "contact"
+                f"(sequence={self.contact_sequence}, "
+                f"need>{baseline.contact_sequence})"
+            )
+        return tuple(missing)
+
+    def missing_snapshot_data(
+        self,
+        after_sequences: tuple[int, int, int],
+        *,
+        use_ground_truth: bool,
+        after_stamp_ns: int | None,
+    ) -> tuple[str, ...]:
+        """Describe unmet freshness conditions for a policy snapshot."""
+        missing = []
+        if self.scan_sequence <= after_sequences[0]:
+            missing.append(
+                "scan"
+                f"(sequence={self.scan_sequence}, need>{after_sequences[0]})"
+            )
+        if self.odometry_sequence <= after_sequences[1]:
+            missing.append(
+                "odometry"
+                f"(sequence={self.odometry_sequence}, "
+                f"need>{after_sequences[1]})"
+            )
+        if use_ground_truth and self.ground_truth_sequence <= after_sequences[2]:
+            missing.append(
+                "model_state"
+                f"(sequence={self.ground_truth_sequence}, "
+                f"need>{after_sequences[2]})"
+            )
+        if after_stamp_ns is not None:
+            if self.scan_stamp_ns <= after_stamp_ns:
+                missing.append(
+                    "scan_stamp"
+                    f"(stamp_ns={self.scan_stamp_ns}, need>{after_stamp_ns})"
+                )
+            if self.odometry_stamp_ns <= after_stamp_ns:
+                missing.append(
+                    "odometry_stamp"
+                    f"(stamp_ns={self.odometry_stamp_ns}, "
+                    f"need>{after_stamp_ns})"
+                )
+        return tuple(missing)
+
+
+@dataclass(frozen=True)
 class SensorSnapshot:
     """Immutable, coherent view of the latest policy-relevant ROS data."""
 
@@ -359,6 +500,75 @@ class PendingStep:
     command_stamp_ns: int
     sequences: tuple[int, int, int]
     contact_sequence: int
+
+
+@dataclass(frozen=True)
+class PendingGazeboReset:
+    """Episode placement and freshness barriers prepared while paused."""
+
+    world_map: WorldMap
+    sample: EpisodeSample
+    reset_stamp_ns: int
+    sequences: tuple[int, int, int]
+    contact_sequence: int
+
+
+@dataclass(frozen=True)
+class ResetSafetyCheck:
+    """Pure safety result for one post-teleport Gazebo observation."""
+
+    map_free: bool
+    footprint_clear: bool
+    odom_xy_error: float
+    odom_yaw_error: float
+    connected: bool
+    shortest_path: float
+    truth_x: float
+    truth_y: float
+    truth_yaw: float
+    minimum_scan: float
+    scan_hit: FootprintScanHit | None
+
+    @property
+    def safe(self) -> bool:
+        """Return whether every reset invariant is satisfied."""
+        return bool(
+            self.map_free
+            and self.footprint_clear
+            and self.odom_xy_error <= 0.08
+            and self.odom_yaw_error <= 0.12
+            and self.connected
+        )
+
+    def diagnostic(self) -> str:
+        """Format a complete single-line reset diagnostic."""
+        fields = [
+            f"map_free={self.map_free}",
+            f"footprint_clear={self.footprint_clear}",
+            f"odom_xy_error={self.odom_xy_error:.6f}",
+            f"odom_yaw_error={self.odom_yaw_error:.6f}",
+            f"minimum_scan={self.minimum_scan:.6f}",
+            f"connected={self.connected}",
+            (
+                "truth_pose=("
+                f"{self.truth_x:.6f},{self.truth_y:.6f},{self.truth_yaw:.6f})"
+            ),
+        ]
+        if self.scan_hit is not None:
+            fields.extend(
+                (
+                    f"lidar_sector={self.scan_hit.sector_index}",
+                    (
+                        "lidar_angle_deg="
+                        f"{math.degrees(self.scan_hit.angle_radians):.3f}"
+                    ),
+                    f"lidar_range={self.scan_hit.measured_range:.6f}",
+                    f"lidar_threshold={self.scan_hit.threshold:.6f}",
+                )
+            )
+        else:
+            fields.append("lidar_sector=none")
+        return ", ".join(fields)
 
 
 class RosObservationNode(_NodeBase):
@@ -819,6 +1029,32 @@ class RosObservationNode(_NodeBase):
                 self._ground_truth_sequence,
             )
 
+    def stream_activity(self) -> RosStreamActivity:
+        """Return stream counters and stamps without consuming queued data."""
+        with self._condition:
+            return RosStreamActivity(
+                scan_sequence=self._scan_sequence,
+                odometry_sequence=self._odometry_sequence,
+                ground_truth_sequence=self._ground_truth_sequence,
+                contact_sequence=self._contact_sequence,
+                scan_stamp_ns=self._scan_stamp_ns,
+                odometry_stamp_ns=self._odometry_stamp_ns,
+            )
+
+    def missing_fresh_snapshot_data(
+        self,
+        after_sequences: tuple[int, int, int],
+        *,
+        use_ground_truth: bool,
+        after_stamp_ns: int | None,
+    ) -> tuple[str, ...]:
+        """Explain why a fresh-snapshot barrier has not completed."""
+        return self.stream_activity().missing_snapshot_data(
+            after_sequences,
+            use_ground_truth=use_ground_truth,
+            after_stamp_ns=after_stamp_ns,
+        )
+
     def goal_sequence(self) -> int:
         """Return the number of accepted internal or external goals."""
         with self._condition:
@@ -1082,9 +1318,9 @@ class MarthaEnv(_GymEnvBase):
         control_timeout: float = 2.0,
         service_timeout: float = 5.0,
         goal_tolerance: float = 0.25,
-        max_goal_distance: float = 12.0,
+        goal_distance_scale: float = DEFAULT_GOAL_DISTANCE_SCALE,
         min_goal_distance: float = 2.0,
-        footprint_safety_margin: float = 0.02,
+        footprint_safety_margin: float = 0.01,
         action_limits: ActionLimits = ActionLimits(),
         reward_config: RewardConfig = RewardConfig(),
         allow_hardware_training: bool = False,
@@ -1124,7 +1360,7 @@ class MarthaEnv(_GymEnvBase):
                 control_timeout,
                 service_timeout,
                 goal_tolerance,
-                max_goal_distance,
+                goal_distance_scale,
                 min_goal_distance,
                 footprint_safety_margin,
             ),
@@ -1138,7 +1374,7 @@ class MarthaEnv(_GymEnvBase):
             raise ValueError("scan_range_max must be positive")
         if not 0.0 < min_scan_coverage <= 1.0:
             raise ValueError("min_scan_coverage must be in (0, 1]")
-        if goal_tolerance <= 0.0 or max_goal_distance <= 0.0:
+        if goal_tolerance <= 0.0 or goal_distance_scale <= 0.0:
             raise ValueError("goal distances must be positive")
         if min_goal_distance < 0.0:
             raise ValueError("min_goal_distance cannot be negative")
@@ -1166,7 +1402,7 @@ class MarthaEnv(_GymEnvBase):
         self.control_timeout = float(control_timeout)
         self.service_timeout = float(service_timeout)
         self.goal_tolerance = float(goal_tolerance)
-        self.max_goal_distance = float(max_goal_distance)
+        self.goal_distance_scale = float(goal_distance_scale)
         self.min_goal_distance = float(min_goal_distance)
         self.footprint_safety_margin = float(footprint_safety_margin)
         self.action_limits = action_limits
@@ -1251,7 +1487,7 @@ class MarthaEnv(_GymEnvBase):
         self.ros = self._runtime.node
         self.policy_contract = build_policy_contract(
             self.ros.scan_range_max,
-            self.max_goal_distance,
+            self.goal_distance_scale,
             self.action_limits,
         )
         self._closed = False
@@ -1265,6 +1501,8 @@ class MarthaEnv(_GymEnvBase):
         self._previous_action = np.zeros(ACTION_SIZE, dtype=np.float32)
         self._observation_history = ObservationHistory()
         self._reward_state: RewardState | None = None
+        self._stagnation_reference_distance: float | None = None
+        self._stagnation_steps = 0
         self._last_observation: np.ndarray | None = None
         self._last_snapshot: SensorSnapshot | None = None
 
@@ -1571,14 +1809,43 @@ class MarthaEnv(_GymEnvBase):
         )
 
     def _build_observation(self, snapshot: SensorSnapshot) -> tuple[np.ndarray, float]:
+        # The policy always consumes a local waypoint.  During Gazebo training
+        # the privileged global map synthesizes that waypoint; on hardware the
+        # external global planner must publish it through /goal_pose.
         goal, euclidean_distance, _ = goal_features(
             snapshot.x,
             snapshot.y,
             snapshot.yaw,
             snapshot.goal_x,
             snapshot.goal_y,
-            self.max_goal_distance,
+            self.goal_distance_scale,
         )
+        if (
+            self.backend == "gazebo"
+            and self._world_map is not None
+            and self._distance_field is not None
+            and self._episode_sample is not None
+            and snapshot.ground_truth_x is not None
+            and snapshot.ground_truth_y is not None
+            and snapshot.ground_truth_yaw is not None
+        ):
+            direction = self._world_map.geodesic_direction(
+                snapshot.ground_truth_x,
+                snapshot.ground_truth_y,
+                self._distance_field,
+            )
+            if direction is not None:
+                final_distance = math.hypot(
+                    self._episode_sample.goal_x - snapshot.ground_truth_x,
+                    self._episode_sample.goal_y - snapshot.ground_truth_y,
+                )
+                goal, _ = local_waypoint_features(
+                    direction[0],
+                    direction[1],
+                    snapshot.ground_truth_yaw,
+                    min(LOCAL_WAYPOINT_DISTANCE, final_distance),
+                    self.goal_distance_scale,
+                )
         frame = build_observation_frame(
             snapshot.laser_sectors,
             goal,
@@ -1605,7 +1872,7 @@ class MarthaEnv(_GymEnvBase):
             snapshot.yaw,
             snapshot.goal_x,
             snapshot.goal_y,
-            self.max_goal_distance,
+            self.goal_distance_scale,
         )
         return bearing
 
@@ -1690,15 +1957,38 @@ class MarthaEnv(_GymEnvBase):
         finally:
             self._call_empty("pause")
         if snapshot is None:
+            missing = self.ros.missing_fresh_snapshot_data(
+                sequences,
+                use_ground_truth=True,
+                after_stamp_ns=reset_stamp_ns,
+            )
             raise TimeoutError(
-                "shared Gazebo reset did not produce fresh scan, odometry "
-                "and model state"
+                "shared Gazebo reset timed out waiting for fresh data for "
+                f"{self.robot_name}: {', '.join(missing) or 'complete snapshot'}"
             )
         if not fresh_contact_message:
+            contact_activity = self.ros.stream_activity()
             raise TimeoutError(
-                "shared Gazebo reset did not produce a fresh contact message"
+                "shared Gazebo reset timed out waiting for fresh contact for "
+                f"{self.robot_name}: contact(sequence="
+                f"{contact_activity.contact_sequence}, need>{contact_sequence})"
             )
 
+        return self._finalize_preloaded_explicit_episode(
+            world_map,
+            sample,
+            snapshot,
+        )
+
+    def validate_shared_reset(
+        self,
+        world_map: WorldMap,
+        sample: EpisodeSample,
+        snapshot: SensorSnapshot,
+        *,
+        distance_field: np.ndarray | None = None,
+    ) -> ResetSafetyCheck:
+        """Validate one reset observation without mutating episode state."""
         assert snapshot.ground_truth_x is not None
         assert snapshot.ground_truth_y is not None
         assert snapshot.ground_truth_yaw is not None
@@ -1706,33 +1996,64 @@ class MarthaEnv(_GymEnvBase):
         truth_y = snapshot.ground_truth_y
         truth_yaw = snapshot.ground_truth_yaw
         wrapped_yaw = math.atan2(math.sin(snapshot.yaw), math.cos(snapshot.yaw))
-        safe = (
-            world_map.is_free_pose(truth_x, truth_y)
-            and not scan_hits_footprint(
-                snapshot.laser_sectors,
-                self.ros.scan_range_max,
-                safety_margin=self.footprint_safety_margin,
-            )
-            and math.hypot(snapshot.x, snapshot.y) <= 0.08
-            and abs(wrapped_yaw) <= 0.12
+        map_free = world_map.is_free_pose(truth_x, truth_y)
+        scan_hit = footprint_scan_hit(
+            snapshot.laser_sectors,
+            self.ros.scan_range_max,
+            safety_margin=self.footprint_safety_margin,
         )
-        distance_field = world_map.distance_field(sample.goal_x, sample.goal_y)
+        odom_position_error = math.hypot(snapshot.x, snapshot.y)
+        odom_yaw_error = abs(wrapped_yaw)
+        if distance_field is None:
+            distance_field = world_map.distance_field(sample.goal_x, sample.goal_y)
         shortest_path = world_map.path_distance(
             truth_x,
             truth_y,
             distance_field,
         )
-        if not safe or not math.isfinite(shortest_path):
+        return ResetSafetyCheck(
+            map_free=bool(map_free),
+            footprint_clear=scan_hit is None,
+            odom_xy_error=float(odom_position_error),
+            odom_yaw_error=float(odom_yaw_error),
+            connected=math.isfinite(shortest_path),
+            shortest_path=float(shortest_path),
+            truth_x=float(truth_x),
+            truth_y=float(truth_y),
+            truth_yaw=float(truth_yaw),
+            minimum_scan=float(snapshot.minimum_scan),
+            scan_hit=scan_hit,
+        )
+
+    def _finalize_preloaded_explicit_episode(
+        self,
+        world_map: WorldMap,
+        sample: EpisodeSample,
+        snapshot: SensorSnapshot,
+        *,
+        validation: ResetSafetyCheck | None = None,
+    ) -> SensorSnapshot:
+        """Validate and commit a settled explicit episode while paused."""
+        distance_field = world_map.distance_field(sample.goal_x, sample.goal_y)
+        if validation is None:
+            validation = self.validate_shared_reset(
+                world_map,
+                sample,
+                snapshot,
+                distance_field=distance_field,
+            )
+        if not validation.safe:
             raise RuntimeError(
-                "catalog reset did not settle at a safe connected pose"
+                "catalog reset did not settle at a safe connected pose: "
+                + validation.diagnostic()
             )
         settled_sample = EpisodeSample(
-            start_x=truth_x,
-            start_y=truth_y,
-            start_yaw=truth_yaw,
+            start_x=validation.truth_x,
+            start_y=validation.truth_y,
+            start_yaw=validation.truth_yaw,
             goal_x=sample.goal_x,
             goal_y=sample.goal_y,
-            shortest_path=shortest_path,
+            shortest_path=validation.shortest_path,
         )
         final_goal_x, final_goal_y = self._world_point_in_episode_odom(
             sample.goal_x,
@@ -1746,6 +2067,82 @@ class MarthaEnv(_GymEnvBase):
         self._episode_sample = settled_sample
         self.ros.clear_contacts()
         return snapshot
+
+    def prepare_shared_reset(
+        self,
+        *,
+        seed: int,
+        options: dict[str, Any],
+    ) -> PendingGazeboReset:
+        """
+        Prepare one explicit shared-Gazebo episode without running physics.
+
+        The fleet coordinator owns pause/unpause.  This method deliberately
+        performs only operations that are safe while Gazebo is paused: state
+        invalidation, deterministic sampling, goal setup, teleport and EKF
+        reset.  ``_reset_world_scenario`` is owned by the coordinator and must
+        have run once for the complete round before this method is called.
+        """
+        if self._closed:
+            raise RuntimeError("MarthaEnv is closed")
+        if self.backend != "gazebo" or not self.preloaded_worlds:
+            raise RuntimeError(
+                "shared reset preparation requires preloaded Gazebo worlds"
+            )
+        options = dict(options)
+        if "start" not in options or "goal" not in options:
+            raise ValueError("shared Gazebo reset requires explicit start and goal")
+
+        self._invalidate_episode_state()
+        super().reset(seed=seed)
+        index = self._world_index_for_reset(options)
+        world_map = self.predefined_maps[index]
+        sample = self._episode_for_reset(world_map, options)
+        # Every MarthaEnv keeps its own episode metadata even though the
+        # coordinator switches the shared preloaded world only once.
+        self._active_world_index = index
+
+        self.ros.publish_stop()
+        if self._goal_marker_name is not None:
+            self._delete_entity(self._goal_marker_name, ignore_failure=True)
+            self._goal_marker_name = None
+        self._spawn_goal_marker(sample.goal_x, sample.goal_y)
+        self._set_robot_state(sample.start_x, sample.start_y, sample.start_yaw)
+
+        goal_x, goal_y = self._world_point_in_episode_odom(
+            sample.goal_x,
+            sample.goal_y,
+            sample,
+        )
+        self.ros.set_goal(goal_x, goal_y, self.ros.odom_frame)
+        self.ros.publish_goal(goal_x, goal_y, self.ros.odom_frame)
+        self._reset_filter_pose()
+        reset_stamp_ns = self.ros.get_clock().now().nanoseconds
+        sequences = self.ros.sequence_numbers()
+        contact_sequence = self.ros.clear_contacts()
+        return PendingGazeboReset(
+            world_map=world_map,
+            sample=sample,
+            reset_stamp_ns=reset_stamp_ns,
+            sequences=sequences,
+            contact_sequence=contact_sequence,
+        )
+
+    def finish_shared_reset(
+        self,
+        pending: PendingGazeboReset,
+        snapshot: SensorSnapshot,
+        *,
+        validation: ResetSafetyCheck | None = None,
+    ) -> tuple[np.ndarray, dict[str, Any]]:
+        """Validate, commit and expose one coordinated reset result."""
+        settled = self._finalize_preloaded_explicit_episode(
+            pending.world_map,
+            pending.sample,
+            snapshot,
+            validation=validation,
+        )
+        return self._finish_reset_result(settled)
 
     def _reset_gazebo(self, options: dict[str, Any]) -> SensorSnapshot:
         index = self._world_index_for_reset(options)
@@ -1811,13 +2208,23 @@ class MarthaEnv(_GymEnvBase):
                 self._call_empty("pause")
             if settled_snapshot is None:
                 self.ros.publish_stop()
+                missing = self.ros.missing_fresh_snapshot_data(
+                    sequences,
+                    use_ground_truth=True,
+                    after_stamp_ns=settle_stamp_ns,
+                )
                 raise TimeoutError(
-                    "Gazebo reset did not produce fresh /scan, odometry and "
-                    "model state"
+                    "Gazebo reset timed out waiting for fresh data for "
+                    f"{self.robot_name}: "
+                    f"{', '.join(missing) or 'complete snapshot'}"
                 )
             if not fresh_contact_message:
+                contact_activity = self.ros.stream_activity()
                 raise TimeoutError(
-                    "Gazebo reset did not produce a fresh contact message"
+                    "Gazebo reset timed out waiting for fresh contact for "
+                    f"{self.robot_name}: contact(sequence="
+                    f"{contact_activity.contact_sequence}, "
+                    f"need>{contact_sequence})"
                 )
 
             assert settled_snapshot.ground_truth_x is not None
@@ -1969,8 +2376,14 @@ class MarthaEnv(_GymEnvBase):
             after_stamp_ns=reset_stamp_ns,
         )
         if snapshot is None:
+            missing = self.ros.missing_fresh_snapshot_data(
+                sequences,
+                use_ground_truth=False,
+                after_stamp_ns=reset_stamp_ns,
+            )
             raise TimeoutError(
-                "Hardware reset needs a goal plus fresh /scan and /odometry/filtered"
+                "Hardware reset timed out waiting for fresh data: "
+                f"{', '.join(missing) or 'complete snapshot'}"
             )
         if snapshot.motor_fault:
             raise RuntimeError("Cannot reset while /hardware/motor_fault is active")
@@ -1985,6 +2398,8 @@ class MarthaEnv(_GymEnvBase):
         self._previous_action = np.zeros(ACTION_SIZE, dtype=np.float32)
         self._observation_history.clear()
         self._reward_state = None
+        self._stagnation_reference_distance = None
+        self._stagnation_steps = 0
         self._last_observation = None
         self._last_snapshot = None
         self._world_map = None
@@ -2011,13 +2426,22 @@ class MarthaEnv(_GymEnvBase):
             if self.backend == "gazebo"
             else self._reset_hardware(options)
         )
+        return self._finish_reset_result(snapshot)
+
+    def _finish_reset_result(
+        self,
+        snapshot: SensorSnapshot,
+    ) -> tuple[np.ndarray, dict[str, Any]]:
+        """Initialize observation, reward and metrics from a valid reset."""
         observation, policy_distance = self._build_observation(snapshot)
         euclidean_distance = self._episode_euclidean_distance(
             snapshot,
             policy_distance,
         )
         distance = self._distance_for_metrics(snapshot, euclidean_distance)
-        self._reward_state = RewardState.initial(euclidean_distance)
+        self._reward_state = RewardState.initial(distance)
+        self._stagnation_reference_distance = distance
+        self._stagnation_steps = 0
         self._last_observation = observation
         self._last_snapshot = snapshot
         info = {
@@ -2065,6 +2489,7 @@ class MarthaEnv(_GymEnvBase):
             "reached_goal": False,
             "collision": False,
             "out_of_bounds": False,
+            "stagnated": False,
             "sensor_timeout": True,
             "motor_fault": self.ros.motor_fault,
             "reward_components": components,
@@ -2108,6 +2533,28 @@ class MarthaEnv(_GymEnvBase):
             contact_sequence=contact_sequence,
         )
 
+    def prepare_stop_step(self) -> PendingStep:
+        """Publish an immediate stop and account for its following transition."""
+        if self._closed:
+            raise RuntimeError("MarthaEnv is closed")
+        if self._last_observation is None:
+            raise RuntimeError("Call reset() before prepare_stop_step()")
+        zero = np.zeros(ACTION_SIZE, dtype=np.float32)
+        contact_sequence = self.ros.clear_contacts()
+        self.ros.publish_stop()
+        command_stamp_ns = self.ros.get_clock().now().nanoseconds
+        sequences = self.ros.sequence_numbers()
+        return PendingStep(
+            requested_action=zero.copy(),
+            limited_action=zero.copy(),
+            applied_action=zero.copy(),
+            command=zero.copy(),
+            command_inhibited=self.ros.motor_fault,
+            command_stamp_ns=command_stamp_ns,
+            sequences=sequences,
+            contact_sequence=contact_sequence,
+        )
+
     def wait_for_step_snapshot(self, pending: PendingStep) -> SensorSnapshot | None:
         """Wait for the sensor transition associated with a prepared action."""
         return self.ros.wait_for_fresh_snapshot(
@@ -2143,7 +2590,11 @@ class MarthaEnv(_GymEnvBase):
             world_index = self._active_world_index
             truth_x = snapshot.ground_truth_x
             truth_y = snapshot.ground_truth_y
-            out_of_bounds = not self._world_map.contains_safe_center(
+            # The geodesic field is defined only on cells with the configured
+            # robot clearance.  Treat entering any inflated obstacle/boundary
+            # cell as a terminal unsafe pose, even if Gazebo has not emitted a
+            # physical contact yet.
+            out_of_bounds = not self._world_map.is_free_pose(
                 truth_x,
                 truth_y,
             )
@@ -2151,13 +2602,32 @@ class MarthaEnv(_GymEnvBase):
         collision = bool(contact_collision or motor_fault)
         reached_goal = euclidean_distance <= self.goal_tolerance
         distance = self._distance_for_metrics(snapshot, euclidean_distance)
-        terminated = bool(reached_goal or collision or out_of_bounds)
+        if not math.isfinite(distance):
+            out_of_bounds = True
+        primary_terminal = bool(reached_goal or collision or out_of_bounds)
+        stagnated = False
+        if not primary_terminal:
+            if self._stagnation_reference_distance is None:
+                raise RuntimeError(
+                    "stagnation state was not initialized by reset"
+                )
+            (
+                self._stagnation_reference_distance,
+                self._stagnation_steps,
+                stagnated,
+            ) = update_stagnation(
+                self._stagnation_reference_distance,
+                self._stagnation_steps,
+                distance,
+                self.reward_config,
+            )
+        terminated = bool(primary_terminal or stagnated)
         truncated = bool(not terminated and self._step_count >= self.max_steps)
         if self._reward_state is None:
             raise RuntimeError("reward state was not initialized by reset")
         reward, components, self._reward_state = calculate_reward(
             state=self._reward_state,
-            distance=euclidean_distance,
+            distance=distance,
             goal_bearing=self._goal_bearing(snapshot),
             minimum_scan=snapshot.minimum_scan,
             angular_velocity=float(pending.command[2]),
@@ -2165,6 +2635,7 @@ class MarthaEnv(_GymEnvBase):
             collision=collision,
             out_of_bounds=out_of_bounds,
             timeout=truncated,
+            stagnated=stagnated,
             config=self.reward_config,
         )
         if terminated or truncated:
@@ -2179,6 +2650,7 @@ class MarthaEnv(_GymEnvBase):
             "reached_goal": reached_goal,
             "collision": collision,
             "out_of_bounds": out_of_bounds,
+            "stagnated": stagnated,
             "sensor_timeout": False,
             "motor_fault": motor_fault,
             "distance": distance,
@@ -2235,6 +2707,51 @@ class MarthaEnv(_GymEnvBase):
         if not self._closed:
             self.ros.publish_stop()
 
+    def ground_truth_position(self) -> tuple[float, float] | None:
+        """Return the last verified Gazebo position for reset separation."""
+        snapshot = self._last_snapshot
+        if (
+            snapshot is None
+            or snapshot.ground_truth_x is None
+            or snapshot.ground_truth_y is None
+        ):
+            return None
+        return float(snapshot.ground_truth_x), float(snapshot.ground_truth_y)
+
+    def expert_action(self) -> np.ndarray | None:
+        """Return privileged geodesic planar guidance for training only."""
+        snapshot = self._last_snapshot
+        if (
+            self.backend != "gazebo"
+            or self._world_map is None
+            or self._distance_field is None
+            or snapshot is None
+            or snapshot.ground_truth_x is None
+            or snapshot.ground_truth_y is None
+            or snapshot.ground_truth_yaw is None
+        ):
+            return None
+        direction = self._world_map.geodesic_direction(
+            snapshot.ground_truth_x,
+            snapshot.ground_truth_y,
+            self._distance_field,
+        )
+        if direction is None:
+            return None
+        cosine = math.cos(snapshot.ground_truth_yaw)
+        sine = math.sin(snapshot.ground_truth_yaw)
+        world_x, world_y = direction
+        body_x = cosine * world_x + sine * world_y
+        body_y = -sine * world_x + cosine * world_y
+        # A half-scale teacher can complete a 90-degree direction change
+        # within one slew-limited transition.  Full-scale grid following
+        # carries too much residual velocity through tight corners.
+        expert_speed = 0.50
+        return np.asarray(
+            [expert_speed * body_x, expert_speed * body_y, 0.0],
+            dtype=np.float32,
+        )
+
     def park(self, x: float, y: float, yaw: float = 0.0) -> None:
         """Retire this robot outside every arena without destroying its stack."""
         if self.backend != "gazebo":
@@ -2282,7 +2799,6 @@ __all__ = [
     "OBSERVATION_HISTORY_FRAMES",
     "OBSERVATION_HISTORY_SECONDS",
     "OBSERVATION_SIZE",
-    "POLICY_ARCHITECTURE",
     "POLICY_CONTRACT_VERSION",
     "MarthaEnv",
     "RosObservationNode",

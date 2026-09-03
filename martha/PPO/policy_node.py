@@ -33,6 +33,9 @@ from .martha_env import (
     scan_hits_footprint,
 )
 from .observations import (
+    DEFAULT_GOAL_DISTANCE_SCALE,
+    GOAL_GUIDANCE_MODE,
+    LOCAL_WAYPOINT_DISTANCE,
     ObservationHistory,
     build_observation_frame,
     goal_features,
@@ -56,7 +59,7 @@ POLICY_DEFAULTS = {
     "goal_tolerance": 0.25,
     "collision_distance": 0.08,
     "footprint_safety_margin": 0.05,
-    "max_goal_distance": 12.0,
+    "goal_distance_scale": DEFAULT_GOAL_DISTANCE_SCALE,
     "max_vx": 0.35,
     "max_vy": 0.35,
     "max_wz": 0.80,
@@ -123,7 +126,7 @@ class PolicyNode(RosObservationNode):
             "goal_tolerance",
             "collision_distance",
             "footprint_safety_margin",
-            "max_goal_distance",
+            "goal_distance_scale",
             "max_vx",
             "max_vy",
             "max_wz",
@@ -147,8 +150,8 @@ class PolicyNode(RosObservationNode):
         self.footprint_safety_margin = float(
             self.get_parameter("footprint_safety_margin").value
         )
-        self.max_goal_distance = float(
-            self.get_parameter("max_goal_distance").value
+        self.goal_distance_scale = float(
+            self.get_parameter("goal_distance_scale").value
         )
         self.action_limits = ActionLimits(
             max_vx=float(self.get_parameter("max_vx").value),
@@ -165,7 +168,7 @@ class PolicyNode(RosObservationNode):
                 self.goal_tolerance,
                 self.collision_distance,
                 self.footprint_safety_margin,
-                self.max_goal_distance,
+                self.goal_distance_scale,
                 self.action_limits.max_vx,
                 self.action_limits.max_vy,
                 self.action_limits.max_wz,
@@ -179,7 +182,7 @@ class PolicyNode(RosObservationNode):
             self.control_rate,
             self.sensor_timeout,
             self.goal_tolerance,
-            self.max_goal_distance,
+            self.goal_distance_scale,
             self.action_limits.max_vx,
             self.action_limits.max_vy,
             self.action_limits.max_wz,
@@ -193,7 +196,7 @@ class PolicyNode(RosObservationNode):
         self.device = choose_device(str(self.get_parameter("device").value))
         expected_contract = build_policy_contract(
             self.scan_range_max,
-            self.max_goal_distance,
+            self.goal_distance_scale,
             self.action_limits,
         )
         self.network, self.checkpoint, _ = load_policy(
@@ -201,6 +204,8 @@ class PolicyNode(RosObservationNode):
             self.device,
             expected_contract=expected_contract,
         )
+        self._recurrent_state = self.network.initial_recurrent_state(1)
+        self._recurrent_episode_start = True
         self.control_timer = self.create_timer(
             1.0 / self.control_rate,
             self._control_tick,
@@ -212,7 +217,9 @@ class PolicyNode(RosObservationNode):
         )
         self.publish_stop()
         self.get_logger().info(
-            f"PPO policy loaded on {self.device}; waiting for /goal_pose"
+            f"PPO policy loaded on {self.device}; guidance={GOAL_GUIDANCE_MODE}; "
+            f"waiting for a ~{LOCAL_WAYPOINT_DISTANCE:.2f} m local waypoint "
+            "on /goal_pose"
         )
 
     def _set_state(self, state: str, reason: str | None = None) -> None:
@@ -223,10 +230,17 @@ class PolicyNode(RosObservationNode):
         suffix = "" if reason is None else f": {reason}"
         self.get_logger().info(f"Policy {previous} -> {state}{suffix}")
 
+    def _reset_policy_memory(self) -> None:
+        """Clear explicit observation history and learned LSTM memory."""
+        self._observation_history.clear()
+        if hasattr(self, "network"):
+            self._recurrent_state = self.network.initial_recurrent_state(1)
+            self._recurrent_episode_start = True
+
     def _enter_fault(self, reason: str) -> None:
         self._fault_latched = True
         self._previous_action.fill(0.0)
-        self._observation_history.clear()
+        self._reset_policy_memory()
         self.publish_stop()
         self._set_state(STATE_FAULT, reason)
 
@@ -237,12 +251,17 @@ class PolicyNode(RosObservationNode):
                 "Ignoring goal while faulted; clear the cause and call ~/rearm"
             )
             return
+        was_active = self.policy_state == STATE_ACTIVE
         if not super()._goal_callback(message):
             return
-        self._activation_wall_time = time.monotonic()
-        self._previous_action.fill(0.0)
-        self._observation_history.clear()
-        self._set_state(STATE_ACTIVE, "new goal")
+        # A global planner is expected to stream the moving 0.50 m waypoint.
+        # Those updates are part of one navigation episode and must not erase
+        # the LSTM/history or restart the action slew limiter every cycle.
+        if not was_active:
+            self._activation_wall_time = time.monotonic()
+            self._previous_action.fill(0.0)
+            self._reset_policy_memory()
+            self._set_state(STATE_ACTIVE, "new local-guidance stream")
 
     def _fault_callback(self, message: Any) -> None:
         was_faulted = self._fault_latched
@@ -251,7 +270,7 @@ class PolicyNode(RosObservationNode):
             self._enter_fault("hardware motor fault")
         elif was_faulted:
             self._previous_action.fill(0.0)
-            self._observation_history.clear()
+            self._reset_policy_memory()
             self.publish_stop()
             self.get_logger().warning(
                 "Motor fault signal cleared; policy remains FAULT until ~/rearm"
@@ -291,7 +310,7 @@ class PolicyNode(RosObservationNode):
             return response
         self._fault_latched = False
         self._previous_action.fill(0.0)
-        self._observation_history.clear()
+        self._reset_policy_memory()
         self.clear_goal()
         self._set_state(STATE_IDLE, "operator rearmed; new goal required")
         response.success = True
@@ -305,7 +324,7 @@ class PolicyNode(RosObservationNode):
             snapshot.yaw,
             snapshot.goal_x,
             snapshot.goal_y,
-            self.max_goal_distance,
+            self.goal_distance_scale,
         )
         frame = build_observation_frame(
             snapshot.laser_sectors,
@@ -371,14 +390,20 @@ class PolicyNode(RosObservationNode):
             observation, distance = self._observation(snapshot)
             if distance <= self.goal_tolerance:
                 self._previous_action.fill(0.0)
-                self._observation_history.clear()
+                self._reset_policy_memory()
                 self.publish_stop()
                 self._set_state(STATE_GOAL, f"goal reached at {distance:.3f} m")
                 return
-            action, _, _ = self.network.get_action(
-                observation,
-                deterministic=True,
+            action, _, _, self._recurrent_state = (
+                self.network.get_actions_recurrent(
+                    observation,
+                    self._recurrent_state,
+                    episode_starts=[self._recurrent_episode_start],
+                    deterministic=True,
+                )
             )
+            action = action.squeeze(0)
+            self._recurrent_episode_start = False
             if hasattr(action, "detach"):
                 action = action.detach().cpu().numpy()
             requested = sanitize_action(action)
