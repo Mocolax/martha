@@ -100,13 +100,13 @@ class TrainingDefaults:
     # needs exploration most.  One update covers rollout_steps environment
     # steps, so this clock tracks the experience actually collected.
     entropy_exploration_updates: int = 200
-    entropy_decay_updates: int = 600
+    entropy_decay_updates: int = 1000
     # Exploration is annealed towards a floor instead of exactly zero, so the
     # learned STD cannot collapse into a deterministic policy that has no way
     # back out of whatever behaviour it settled on.
-    entropy_final_fraction: float = 0.15
+    entropy_final_fraction: float = 0.30
     policy_std_initial: float = 0.40
-    policy_std_final: float = 0.15
+    policy_std_final: float = 0.25
     reward_scale: float = 1
     max_grad_norm: float = 0.5
     eval_every: int = 100

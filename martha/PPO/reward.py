@@ -46,7 +46,7 @@ class RewardConfig:
     # Equation (9): linear penalty below the physical clearance threshold.
     # Stronger than the paper's value so approaching an obstacle is punished
     # gradually, instead of only through the sparse out-of-bounds terminal.
-    laser_penalty_scale: float = 0.03
+    laser_penalty_scale: float = 0.05
     laser_clearance_distance: float = 0.65
     # Equations (10)-(12): excessive direct left/right reversals.
     wiggle_penalty: float = 0.00002
