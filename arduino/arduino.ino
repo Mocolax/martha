@@ -32,6 +32,8 @@ static const unsigned long BATTERY_REPORT_PERIOD_MS = 1000;
 static const int MOTOR_SLEEP_PIN = 17;
 static const int MOTOR_OVERCURRENT_PIN = 23;
 static const int MOTOR_OVERCURRENT_ACTIVE_LEVEL = LOW;
+// Margen para que el LDO del driver y el LM339 arranquen tras subir nSLEEP.
+static const unsigned long MOTOR_OVERCURRENT_SETTLE_MS = 5;
 static const uint8_t MOTOR_COUNT = 4;
 static const float COUNTS_PER_REV = 3200.0f;
 static const unsigned long CONTROL_PERIOD_US = 10000;
@@ -110,6 +112,11 @@ int8_t motorDirections[MOTOR_COUNT];
 bool motorOvercurrentLatched = false;
 bool batteryLowLatched = false;
 bool cmdVelActive = false;
+// El LM339 de sobrecorriente se alimenta del LDO de 5V de un driver, y ese LDO
+// se apaga cuando nSLEEP esta bajo. Mientras los drivers duerman, D23 no
+// significa nada: hay que saber si estan despiertos y desde cuando.
+bool motorsAwake = false;
+unsigned long motorsAwakeSinceMs = 0;
 float batteryVoltage = 0.0f;
 uint8_t batteryLowConfirmationCount = 0;
 
@@ -289,7 +296,7 @@ void printI2cScan()
 void initBatteryMonitor()
 {
   pinMode(MOTOR_SLEEP_PIN, OUTPUT);
-  digitalWrite(MOTOR_SLEEP_PIN, LOW);
+  setMotorSleep(false);
   pinMode(BATTERY_VOLTAGE_PIN, INPUT);
   analogReadResolution(12);
   analogSetPinAttenuation(BATTERY_VOLTAGE_PIN, ADC_11db);
@@ -491,7 +498,7 @@ void initMotors()
 {
   pinMode(MOTOR_OVERCURRENT_PIN, INPUT_PULLUP);
   pinMode(MOTOR_SLEEP_PIN, OUTPUT);
-  digitalWrite(MOTOR_SLEEP_PIN, LOW);
+  setMotorSleep(false);
 
   for (uint8_t i = 0; i < MOTOR_COUNT; ++i)
   {
@@ -505,14 +512,15 @@ void initMotors()
     return;
   }
 
+  // No se puede comprobar la sobrecorriente antes de habilitar: sin nSLEEP alto
+  // el LM339 no tiene alimentacion. Se despierta, se espera al LDO y se lee.
+  setMotorSleep(true);
+  delay(MOTOR_OVERCURRENT_SETTLE_MS);
+
   if (isMotorOvercurrentActive())
   {
-    motorOvercurrentLatched = true;
-    Serial.println("motor_overcurrent");
-    return;
+    latchMotorOvercurrent();
   }
-
-  digitalWrite(MOTOR_SLEEP_PIN, HIGH);
 }
 
 void attachMotorPwm(int pin, uint8_t channel)
@@ -655,8 +663,30 @@ void stopAllMotors()
   }
 }
 
+void setMotorSleep(bool awake)
+{
+  if (awake && !motorsAwake)
+  {
+    motorsAwakeSinceMs = millis();
+  }
+  motorsAwake = awake;
+  digitalWrite(MOTOR_SLEEP_PIN, awake ? HIGH : LOW);
+}
+
 bool isMotorOvercurrentActive()
 {
+  // Con los drivers dormidos el comparador esta sin alimentar y R4 tira de D23
+  // hacia un riel muerto, lo que se leeria como falla permanente.
+  if (!motorsAwake)
+  {
+    return false;
+  }
+
+  if (millis() - motorsAwakeSinceMs < MOTOR_OVERCURRENT_SETTLE_MS)
+  {
+    return false;
+  }
+
   return digitalRead(MOTOR_OVERCURRENT_PIN) == MOTOR_OVERCURRENT_ACTIVE_LEVEL;
 }
 
@@ -680,7 +710,7 @@ void latchMotorOvercurrent()
   motorOvercurrentLatched = true;
   cmdVelActive = false;
   stopAllMotors();
-  digitalWrite(MOTOR_SLEEP_PIN, LOW);
+  setMotorSleep(false);
   Serial.println("motor_overcurrent");
 }
 
@@ -696,7 +726,7 @@ void latchBatteryLow()
   }
 
   stopAllMotors();
-  digitalWrite(MOTOR_SLEEP_PIN, LOW);
+  setMotorSleep(false);
   publishBatteryLowEvent();
 }
 
@@ -712,8 +742,14 @@ void resetMotorProtection()
     return;
   }
 
+  // Tras un latch nSLEEP esta bajo, asi que el comparador esta muerto. Hay que
+  // rehabilitar antes de comprobar, o el reset queda bloqueado para siempre.
+  setMotorSleep(true);
+  delay(MOTOR_OVERCURRENT_SETTLE_MS);
+
   if (isMotorOvercurrentActive())
   {
+    setMotorSleep(false);
     Serial.println("motor_overcurrent_reset_blocked");
     return;
   }
@@ -721,7 +757,6 @@ void resetMotorProtection()
   motorOvercurrentLatched = false;
   batteryLowLatched = false;
   batteryLowConfirmationCount = 0;
-  digitalWrite(MOTOR_SLEEP_PIN, HIGH);
   startMotorControl();
   Serial.println("motor_protection_reset");
 }

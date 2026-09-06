@@ -43,10 +43,12 @@ class RewardConfig:
     orientation_negative_scale: float = 0.0
     # Equation (8): a new best distance within the current episode.
     shortest_distance_scale: float = 0.20
-    # Equation (9): linear penalty below the physical clearance threshold.
-    # Stronger than the paper's value so approaching an obstacle is punished
-    # gradually, instead of only through the sparse out-of-bounds terminal.
-    laser_penalty_scale: float = 0.05
+    # Dense clearance penalty: zero at laser_clearance_distance and growing
+    # quadratically to laser_penalty_scale at contact, so passing close is
+    # cheap but nearly touching an obstacle is strongly discouraged. This is
+    # now the main obstacle signal, since entering the clearance band is no
+    # longer terminal -- only a real bumper contact ends the episode.
+    laser_penalty_scale: float = 0.10
     laser_clearance_distance: float = 0.65
     # Equations (10)-(12): excessive direct left/right reversals.
     wiggle_penalty: float = 0.00002
@@ -261,9 +263,12 @@ def calculate_reward(
         best_distance = distance
 
     if minimum_scan < config.laser_clearance_distance:
-        components["laser"] = -(
-            config.laser_clearance_distance - minimum_scan
-        ) * config.laser_penalty_scale
+        proximity = (
+            config.laser_clearance_distance - max(minimum_scan, 0.0)
+        ) / config.laser_clearance_distance
+        components["laser"] = (
+            -config.laser_penalty_scale * proximity * proximity
+        )
 
     wiggle_state, components["wiggle"] = _updated_wiggle_state(
         state,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import csv
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -64,12 +65,16 @@ class TrainingDefaults:
     max_steps: int = 1400
     map_batch_episodes: int = 6
     curriculum_enabled: bool = True
-    curriculum_easy_fraction: float = 0.40
-    curriculum_medium_fraction: float = 0.60
-    curriculum_full_fraction: float = 0.85
+    # The ceiling advances by mastery, not by episode count: it rises to the
+    # next distance only once the rolling success rate clears the threshold
+    # over a full window, with a per-level episode cap as a stall fallback.
     curriculum_easy_max_distance: float = 6.0
     curriculum_medium_max_distance: float = 10.0
     curriculum_hard_max_distance: float = 18.0
+    curriculum_success_threshold: float = 0.55
+    curriculum_window: int = 200
+    curriculum_min_episodes: int = 300
+    curriculum_max_episodes: int = 2000
     max_wall_time_hours: float = 24.0
     shutdown_grace_minutes: float = 30.0
     rollout_steps: int = 1024
@@ -333,9 +338,7 @@ def _validate_args(args: argparse.Namespace) -> None:
         "physics-step-size": args.physics_step_size,
         "max-wall-time-hours": args.max_wall_time_hours,
         "shutdown-grace-minutes": args.shutdown_grace_minutes,
-        "curriculum-easy-fraction": args.curriculum_easy_fraction,
-        "curriculum-medium-fraction": args.curriculum_medium_fraction,
-        "curriculum-full-fraction": args.curriculum_full_fraction,
+        "curriculum-success-threshold": args.curriculum_success_threshold,
         "curriculum-easy-max-distance": args.curriculum_easy_max_distance,
         "curriculum-medium-max-distance": args.curriculum_medium_max_distance,
         "curriculum-hard-max-distance": args.curriculum_hard_max_distance,
@@ -374,19 +377,18 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError(
             "policy STD limits must satisfy 0 < final <= initial"
         )
-    curriculum_fractions = (
-        args.curriculum_easy_fraction,
-        args.curriculum_medium_fraction,
-        args.curriculum_full_fraction,
-    )
+    if not 0.0 < args.curriculum_success_threshold <= 1.0:
+        raise ValueError(
+            "curriculum_success_threshold must be in (0, 1]"
+        )
     if not (
-        0.0 < curriculum_fractions[0]
-        < curriculum_fractions[1]
-        < curriculum_fractions[2]
-        < 1.0
+        args.curriculum_window > 0
+        and args.curriculum_min_episodes > 0
+        and args.curriculum_max_episodes >= args.curriculum_window
     ):
         raise ValueError(
-            "curriculum fractions must be strictly increasing inside (0, 1)"
+            "curriculum window/min must be positive and max must be at least "
+            "the window"
         )
     curriculum_distances = (
         args.curriculum_easy_max_distance,
@@ -968,21 +970,81 @@ def training_world_indices_for_round(
     ]
 
 
-def curriculum_max_goal_distance(
-    args: argparse.Namespace,
-    episode: int,
-) -> float | None:
-    """Return the current geodesic route ceiling for training resets."""
-    if not bool(getattr(args, "curriculum_enabled", False)):
-        return None
-    progress = (episode - 1) / int(args.episodes)
-    if progress < args.curriculum_easy_fraction:
-        return float(args.curriculum_easy_max_distance)
-    if progress < args.curriculum_medium_fraction:
-        return float(args.curriculum_medium_max_distance)
-    if progress < args.curriculum_full_fraction:
-        return float(args.curriculum_hard_max_distance)
-    return None
+class CurriculumScheduler:
+    """
+    Raise the goal-distance ceiling by mastery instead of episode count.
+
+    The ceiling advances to the next level only when the rolling success rate
+    over a full window clears the threshold, so the policy consolidates each
+    distance (and its obstacle avoidance) before facing longer routes. A
+    per-level episode cap advances anyway if progress stalls, so a hard level
+    can never wedge the run.
+    """
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        self.enabled = bool(getattr(args, "curriculum_enabled", False))
+        self._levels = (
+            float(args.curriculum_easy_max_distance),
+            float(args.curriculum_medium_max_distance),
+            float(args.curriculum_hard_max_distance),
+        )
+        self.threshold = float(args.curriculum_success_threshold)
+        self.window = int(args.curriculum_window)
+        self.min_episodes = int(args.curriculum_min_episodes)
+        self.max_episodes = int(args.curriculum_max_episodes)
+        self.level = 0
+        self._outcomes: deque = deque(maxlen=self.window)
+        self._episodes_at_level = 0
+
+    @property
+    def unlocked(self) -> bool:
+        """Whether goals are already unrestricted (past the last level)."""
+        return self.level >= len(self._levels)
+
+    def current_max_distance(self) -> float | None:
+        """Return the active geodesic ceiling, or None for unrestricted."""
+        if not self.enabled or self.unlocked:
+            return None
+        return self._levels[self.level]
+
+    def rolling_success(self) -> float:
+        """Return the success rate over the current window."""
+        if not self._outcomes:
+            return 0.0
+        return sum(self._outcomes) / len(self._outcomes)
+
+    def record(self, reached_goal: bool) -> bool:
+        """Record one finished episode; return True if the level advanced."""
+        if not self.enabled or self.unlocked:
+            return False
+        self._outcomes.append(1.0 if reached_goal else 0.0)
+        self._episodes_at_level += 1
+        mastered = (
+            len(self._outcomes) >= self.window
+            and self._episodes_at_level >= self.min_episodes
+            and self.rolling_success() >= self.threshold
+        )
+        stalled = self._episodes_at_level >= self.max_episodes
+        if mastered or stalled:
+            self.level += 1
+            self._outcomes.clear()
+            self._episodes_at_level = 0
+            return True
+        return False
+
+    def state_dict(self) -> dict:
+        """Return the resumable curriculum position."""
+        return {
+            "level": int(self.level),
+            "episodes_at_level": int(self._episodes_at_level),
+        }
+
+    def load_state(self, state: Any) -> None:
+        """Restore the curriculum position from a checkpoint."""
+        if isinstance(state, dict):
+            self.level = int(state.get("level", 0))
+            self._episodes_at_level = int(state.get("episodes_at_level", 0))
+            self._outcomes.clear()
 
 
 def training_reset_options(
@@ -1780,8 +1842,17 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
         print(f"Training kinematics: {args.training_kinematic}")
         print(f"Physics step: {args.physics_step_size:.4f} s")
         print(f"LiDAR samples: {args.lidar_samples}")
+        curriculum = CurriculumScheduler(args)
         print(f"Map batch: {args.map_batch_episodes} episodes")
-        print(f"Navigation curriculum: {args.curriculum_enabled}")
+        if args.curriculum_enabled:
+            print(
+                "Navigation curriculum: mastery-gated "
+                f"(threshold {args.curriculum_success_threshold:.0%}, "
+                f"window {args.curriculum_window}, "
+                f"cap {args.curriculum_max_episodes} ep/level)"
+            )
+        else:
+            print("Navigation curriculum: disabled")
         print(f"Hard wall-time limit: {args.max_wall_time_hours:.2f} h")
         print(f"Run directory: {run_dir}")
         print(f"Training points: {points_path}")
@@ -1836,10 +1907,7 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                 episode_numbers,
             )
             world_index = world_indices[0]
-            max_goal_distance = curriculum_max_goal_distance(
-                args,
-                episode_numbers[0],
-            )
+            max_goal_distance = curriculum.current_max_distance()
             seeds = [episode_seed(args.seed, 0, episode) for episode in episode_numbers]
             reset_started = time.monotonic()
             if len(set(world_indices)) == len(world_indices):
@@ -1941,6 +2009,20 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                         finished[episode] = state
                         ended_indices.append(environment_index)
                         del active[environment_index]
+                        if curriculum.record(
+                            bool(state["info"].get("reached_goal", False))
+                        ):
+                            ceiling = curriculum.current_max_distance()
+                            limit = (
+                                "unrestricted"
+                                if ceiling is None
+                                else f"<= {ceiling:.0f} m"
+                            )
+                            print(
+                                "curriculum: mastered level -> now "
+                                f"{limit} (episode {episode})",
+                                flush=True,
+                            )
                         timing_values = timings.metric_values()
                         world_name = reference_env.predefined_maps[
                             int(state["info"]["world_index"])
@@ -1957,6 +2039,7 @@ def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                             flush=True,
                         )
                 maybe_update_ppo(completed_episode + len(finished))
+                max_goal_distance = curriculum.current_max_distance()
                 if time.monotonic() >= assignment_deadline:
                     stop_assigning = True
                     wall_limit_reached = True

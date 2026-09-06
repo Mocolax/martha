@@ -194,7 +194,7 @@ def test_pause_service_timeout_retries_and_keeps_robot_stopped(monkeypatch):
     assert env.ros.stops == 2
 
 
-def test_non_navigable_map_pose_terminates_instead_of_crashing_stagnation():
+def test_non_navigable_map_pose_freezes_distance_without_terminating():
     env = object.__new__(MarthaEnv)
     env._closed = False
     env.backend = "gazebo"
@@ -206,6 +206,7 @@ def test_non_navigable_map_pose_terminates_instead_of_crashing_stagnation():
     env._distance_field = np.zeros((1, 1), dtype=np.float64)
     env._reward_state = RewardState.initial(3.0)
     env._stagnation_reference_distance = 3.0
+    env._last_finite_distance = 3.0
     env._stagnation_steps = 0
     env.max_steps = 800
     env.goal_tolerance = 0.25
@@ -254,12 +255,15 @@ def test_non_navigable_map_pose_terminates_instead_of_crashing_stagnation():
         contact_collision=False,
     )
 
-    assert terminated is True
+    # Entering the clearance band is no longer terminal: the episode continues
+    # (only a real contact would end it), the distance is frozen to the last
+    # finite value, and out_of_bounds is kept only as a near-obstacle flag.
+    assert terminated is False
     assert truncated is False
     assert info["out_of_bounds"] is True
     assert info["stagnated"] is False
-    assert reward == pytest.approx(-RewardConfig().out_of_bounds_penalty)
-    assert env.ros.stop_calls == 1
+    assert reward != pytest.approx(-RewardConfig().out_of_bounds_penalty)
+    assert math.isfinite(reward)
 
 
 def test_repeated_world_switches_confirm_deletion_and_reuse_stable_names():
@@ -717,16 +721,19 @@ def test_paper_shortest_distance_rewards_only_new_episode_records():
     assert state.best_distance == pytest.approx(3.5)
 
 
-def test_paper_laser_penalty_is_linear_below_clearance_threshold():
+def test_paper_laser_penalty_grows_quadratically_below_clearance():
     config = RewardConfig()
     _, safe, _ = _paper_reward(RewardState.initial(5.0), 5.0, minimum_scan=0.65)
     _, close, _ = _paper_reward(RewardState.initial(5.0), 5.0, minimum_scan=0.15)
+    _, mid, _ = _paper_reward(RewardState.initial(5.0), 5.0, minimum_scan=0.40)
 
     assert safe["laser"] == 0.0
+    proximity = (config.laser_clearance_distance - 0.15) / config.laser_clearance_distance
     assert close["laser"] == pytest.approx(
-        -(config.laser_clearance_distance - 0.15)
-        * config.laser_penalty_scale
+        -config.laser_penalty_scale * proximity * proximity
     )
+    # Passing close is cheap relative to nearly touching: the penalty is steep.
+    assert abs(mid["laser"]) < 0.30 * abs(close["laser"])
 
 
 def test_paper_wiggle_penalty_uses_direct_reversals_in_a_ten_step_window():

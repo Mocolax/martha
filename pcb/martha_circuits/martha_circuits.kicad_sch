@@ -4675,6 +4675,16 @@
 	)
 	(wire
 		(pts
+			(xy 78.74 146.05) (xy 191.77 146.05)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "48fb6fea-1bf6-45bc-9a32-8f52424a0894")
+	)
+	(wire
+		(pts
 			(xy 86.36 17.78) (xy 86.36 19.05)
 		)
 		(stroke
@@ -4802,16 +4812,6 @@
 			(type default)
 		)
 		(uuid "56bf5617-5b89-446a-a2e3-49e2a84bfbba")
-	)
-	(wire
-		(pts
-			(xy 78.74 146.05) (xy 191.77 146.05)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "57683adc-34aa-4485-99ca-f0f934bc8c01")
 	)
 	(wire
 		(pts
@@ -5092,16 +5092,6 @@
 			(type default)
 		)
 		(uuid "7da286af-4705-4719-be8d-e948e610fdb3")
-	)
-	(wire
-		(pts
-			(xy 128.27 114.3) (xy 130.81 114.3)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "7dfff56b-6b0c-43d7-b8f2-b7c6f4ea38d9")
 	)
 	(wire
 		(pts
@@ -8214,7 +8204,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "R"
+		(property "Value" "1k"
 			(at 248.666 24.13 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8855,85 +8845,6 @@
 			(project "martha_circuits"
 				(path "/8a0047e5-3410-40b2-9332-77237a152757"
 					(reference "J5")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:+5V")
-		(at 128.27 114.3 90)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "4796d471-74e2-4de1-8620-4c0e8d406c3c")
-		(property "Reference" "#PWR024"
-			(at 132.08 114.3 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "+5V"
-			(at 124.46 114.2999 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" ""
-			(at 128.27 114.3 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 128.27 114.3 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"+5V\""
-			(at 128.27 114.3 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "8925e0d8-262c-4877-b273-68cdb1b066a9")
-		)
-		(instances
-			(project "martha_circuits"
-				(path "/8a0047e5-3410-40b2-9332-77237a152757"
-					(reference "#PWR024")
 					(unit 1)
 				)
 			)
@@ -11492,7 +11403,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "R"
+		(property "Value" "1k"
 			(at 237.236 24.13 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -12294,7 +12205,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "R"
+		(property "Value" "1k"
 			(at 271.526 24.13 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -12770,7 +12681,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "R"
+		(property "Value" "1k"
 			(at 260.096 24.13 0)
 			(show_name no)
 			(do_not_autoplace no)

@@ -45,7 +45,7 @@ from martha.PPO.train import (  # noqa: E402
     _evaluation_worlds,
     _truncate_active_for_wall_limit,
     apply_entropy_schedule,
-    curriculum_max_goal_distance,
+    CurriculumScheduler,
     entropy_coefficient_for_update,
     policy_std_ceiling_for_update,
     _validate_resume_reward_scale,
@@ -823,7 +823,7 @@ def test_training_map_index_override_disables_block_rotation():
     assert training_world_index(args, 6, 200) == 4
 
 
-def test_navigation_curriculum_balances_maps_and_expands_route_distances():
+def test_navigation_curriculum_balances_maps_across_the_catalog():
     args = SimpleNamespace(
         backend="gazebo",
         map_index=None,
@@ -831,12 +831,6 @@ def test_navigation_curriculum_balances_maps_and_expands_route_distances():
         seed=42,
         episodes=8000,
         curriculum_enabled=True,
-        curriculum_easy_fraction=0.40,
-        curriculum_medium_fraction=0.60,
-        curriculum_full_fraction=0.85,
-        curriculum_easy_max_distance=6.0,
-        curriculum_medium_max_distance=10.0,
-        curriculum_hard_max_distance=18.0,
     )
 
     early_worlds = {
@@ -844,10 +838,57 @@ def test_navigation_curriculum_balances_maps_and_expands_route_distances():
         for episode in range(1, 73, 12)
     }
     assert early_worlds == set(range(6))
-    assert curriculum_max_goal_distance(args, 1) == pytest.approx(6.0)
-    assert curriculum_max_goal_distance(args, 3201) == pytest.approx(10.0)
-    assert curriculum_max_goal_distance(args, 4801) == pytest.approx(18.0)
-    assert curriculum_max_goal_distance(args, 6801) is None
+
+
+def _curriculum_args(**overrides):
+    base = dict(
+        curriculum_enabled=True,
+        curriculum_easy_max_distance=6.0,
+        curriculum_medium_max_distance=10.0,
+        curriculum_hard_max_distance=18.0,
+        curriculum_success_threshold=0.55,
+        curriculum_window=10,
+        curriculum_min_episodes=10,
+        curriculum_max_episodes=100,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def test_curriculum_advances_only_after_the_success_threshold_is_cleared():
+    sched = CurriculumScheduler(_curriculum_args())
+    assert sched.current_max_distance() == pytest.approx(6.0)
+
+    # A full window below the threshold must not advance.
+    for _ in range(10):
+        assert sched.record(False) is False
+    assert sched.level == 0
+    assert sched.current_max_distance() == pytest.approx(6.0)
+
+    # Clearing the threshold over a full window advances one level.
+    advanced = [sched.record(True) for _ in range(10)]
+    assert any(advanced)
+    assert sched.level == 1
+    assert sched.current_max_distance() == pytest.approx(10.0)
+
+
+def test_curriculum_episode_cap_breaks_a_stall():
+    sched = CurriculumScheduler(_curriculum_args())
+    advanced = False
+    for _ in range(100):
+        advanced = sched.record(False) or advanced
+    # The per-level cap advances even though success never cleared threshold.
+    assert advanced
+    assert sched.level == 1
+
+
+def test_curriculum_unlocks_to_unrestricted_after_the_last_level():
+    sched = CurriculumScheduler(_curriculum_args())
+    for _ in range(3):
+        for _ in range(100):
+            sched.record(False)
+    assert sched.unlocked
+    assert sched.current_max_distance() is None
 
 
 def test_training_map_batch_size_enables_recycling_without_scheduler_state():

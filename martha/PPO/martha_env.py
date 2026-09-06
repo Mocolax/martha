@@ -2368,6 +2368,7 @@ class MarthaEnv(_GymEnvBase):
         self._observation_history.clear()
         self._reward_state = None
         self._stagnation_reference_distance = None
+        self._last_finite_distance = None
         self._stagnation_steps = 0
         self._last_observation = None
         self._last_snapshot = None
@@ -2410,6 +2411,7 @@ class MarthaEnv(_GymEnvBase):
         distance = self._distance_for_metrics(snapshot, euclidean_distance)
         self._reward_state = RewardState.initial(distance)
         self._stagnation_reference_distance = distance
+        self._last_finite_distance = distance
         self._stagnation_steps = 0
         self._last_observation = observation
         self._last_snapshot = snapshot
@@ -2552,18 +2554,17 @@ class MarthaEnv(_GymEnvBase):
             policy_distance,
         )
         world_index = None
-        out_of_bounds = False
+        near_obstacle = False
         if self._world_map is not None:
             assert snapshot.ground_truth_x is not None
             assert snapshot.ground_truth_y is not None
             world_index = self._active_world_index
             truth_x = snapshot.ground_truth_x
             truth_y = snapshot.ground_truth_y
-            # The geodesic field is defined only on cells with the configured
-            # robot clearance.  Treat entering any inflated obstacle/boundary
-            # cell as a terminal unsafe pose, even if Gazebo has not emitted a
-            # physical contact yet.
-            out_of_bounds = not self._world_map.is_free_pose(
+            # Entering the inflated clearance band is no longer terminal: only a
+            # real bumper contact ends an episode near an obstacle, so the policy
+            # can pass close and recover instead of dying at an invisible margin.
+            near_obstacle = not self._world_map.is_free_pose(
                 truth_x,
                 truth_y,
             )
@@ -2571,9 +2572,18 @@ class MarthaEnv(_GymEnvBase):
         collision = bool(contact_collision or motor_fault)
         reached_goal = euclidean_distance <= self.goal_tolerance
         distance = self._distance_for_metrics(snapshot, euclidean_distance)
-        if not math.isfinite(distance):
-            out_of_bounds = True
-        primary_terminal = bool(reached_goal or collision or out_of_bounds)
+        if math.isfinite(distance):
+            self._last_finite_distance = distance
+        else:
+            # The geodesic field is undefined inside the clearance band; freeze
+            # the last valid distance so shaping stays finite and bounded. The
+            # dense clearance penalty supplies the local steer-away gradient.
+            distance = (
+                self._last_finite_distance
+                if self._last_finite_distance is not None
+                else euclidean_distance
+            )
+        primary_terminal = bool(reached_goal or collision)
         stagnated = False
         if not primary_terminal:
             if self._stagnation_reference_distance is None:
@@ -2602,7 +2612,7 @@ class MarthaEnv(_GymEnvBase):
             angular_velocity=float(pending.command[2]),
             reached_goal=reached_goal,
             collision=collision,
-            out_of_bounds=out_of_bounds,
+            out_of_bounds=False,
             timeout=truncated,
             stagnated=stagnated,
             config=self.reward_config,
@@ -2618,7 +2628,7 @@ class MarthaEnv(_GymEnvBase):
             "step": self._step_count,
             "reached_goal": reached_goal,
             "collision": collision,
-            "out_of_bounds": out_of_bounds,
+            "out_of_bounds": near_obstacle,
             "stagnated": stagnated,
             "sensor_timeout": False,
             "motor_fault": motor_fault,
