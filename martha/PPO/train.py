@@ -54,7 +54,7 @@ class TrainingDefaults:
     # An upper bound, not a commitment: max_wall_time_hours ends the run
     # first and the best evaluated policy is checkpointed along the way.
     episodes: int = 6000
-    num_envs: int = 6
+    num_envs: int = 4
     sim_speed_factor: float = 5.0
     physics_step_size: float = 0.002
     lidar_samples: int = 180
@@ -63,14 +63,14 @@ class TrainingDefaults:
     gazebo_startup_timeout: float = 240.0
     training_points: Path | None = None
     max_steps: int = 1400
-    map_batch_episodes: int = 6
+    map_batch_episodes: int = 4
     curriculum_enabled: bool = True
     # The ceiling advances by mastery, not by episode count: it rises to the
     # next distance only once the rolling success rate clears the threshold
     # over a full window, with a per-level episode cap as a stall fallback.
     curriculum_easy_max_distance: float = 6.0
-    curriculum_medium_max_distance: float = 10.0
-    curriculum_hard_max_distance: float = 18.0
+    curriculum_medium_max_distance: float = 8.0
+    curriculum_hard_max_distance: float = 10.0
     curriculum_success_threshold: float = 0.55
     curriculum_window: int = 200
     curriculum_min_episodes: int = 300
@@ -168,7 +168,7 @@ METRIC_FIELDS = [
     "truncated",
     "reached_goal",
     "collision",
-    "out_of_bounds",
+    "near_obstacle",
     "stagnated",
     "spl",
     "elapsed_wall_s",
@@ -997,15 +997,15 @@ class CurriculumScheduler:
         self._episodes_at_level = 0
 
     @property
-    def unlocked(self) -> bool:
-        """Whether goals are already unrestricted (past the last level)."""
-        return self.level >= len(self._levels)
+    def at_final_level(self) -> bool:
+        """Whether the scheduler sits at its permanent top ceiling."""
+        return self.level >= len(self._levels) - 1
 
     def current_max_distance(self) -> float | None:
-        """Return the active geodesic ceiling, or None for unrestricted."""
-        if not self.enabled or self.unlocked:
+        """Return the active geodesic ceiling, capped at the top level."""
+        if not self.enabled:
             return None
-        return self._levels[self.level]
+        return self._levels[min(self.level, len(self._levels) - 1)]
 
     def rolling_success(self) -> float:
         """Return the success rate over the current window."""
@@ -1015,7 +1015,7 @@ class CurriculumScheduler:
 
     def record(self, reached_goal: bool) -> bool:
         """Record one finished episode; return True if the level advanced."""
-        if not self.enabled or self.unlocked:
+        if not self.enabled or self.at_final_level:
             return False
         self._outcomes.append(1.0 if reached_goal else 0.0)
         self._episodes_at_level += 1
@@ -1564,8 +1564,8 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                     "truncated": int(truncated),
                     "reached_goal": int(success),
                     "collision": int(collision),
-                    "out_of_bounds": int(
-                        bool(info.get("out_of_bounds", False))
+                    "near_obstacle": int(
+                        bool(info.get("near_obstacle", False))
                     ),
                     "stagnated": int(
                         bool(info.get("stagnated", False))
@@ -1749,7 +1749,7 @@ def _shared_metric_row(
         "truncated": int(state["truncated"]),
         "reached_goal": int(success),
         "collision": int(bool(info.get("collision", False))),
-        "out_of_bounds": int(bool(info.get("out_of_bounds", False))),
+        "near_obstacle": int(bool(info.get("near_obstacle", False))),
         "stagnated": int(bool(info.get("stagnated", False))),
         "spl": calculate_spl(
             success,

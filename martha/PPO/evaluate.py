@@ -36,12 +36,15 @@ from .reward import RewardConfig
 @dataclass(frozen=True)
 class EvaluationDefaults:
     checkpoint: Path | None = None
-    episodes: int = 5
+    episodes: int = 10
     max_steps: int = 800
     map_index: int | None = None
     backend: str = "gazebo"
     goal: tuple[float, float] | None = None
     goal_frame: str = "odom"
+    # Cap the sampled geodesic route so evaluation measures the same scenario
+    # the policy was trained for. None evaluates at full map difficulty.
+    max_goal_distance: float | None = 10.0
     seed: int = 123
     device: str = "auto"
     csv: Path | None = None
@@ -60,7 +63,7 @@ RESULT_FIELDS = [
     "truncated",
     "reached_goal",
     "collision",
-    "out_of_bounds",
+    "near_obstacle",
     "stagnated",
     "path_length",
     "shortest_path",
@@ -179,7 +182,10 @@ def _reset_options(
             "goal": tuple(args.goal),
             "goal_frame": args.goal_frame,
         }
-    return {"world_index": map_index}
+    options: dict[str, Any] = {"world_index": map_index}
+    if args.max_goal_distance is not None:
+        options["max_goal_distance"] = float(args.max_goal_distance)
+    return options
 
 
 def _confirm_hardware_reset(
@@ -277,7 +283,7 @@ def evaluate_episode(
         "truncated": int(truncated),
         "reached_goal": int(success),
         "collision": int(bool(info.get("collision", False))),
-        "out_of_bounds": int(bool(info.get("out_of_bounds", False))),
+        "near_obstacle": int(bool(info.get("near_obstacle", False))),
         "stagnated": int(bool(info.get("stagnated", False))),
         "path_length": path_length,
         "shortest_path": shortest_path,

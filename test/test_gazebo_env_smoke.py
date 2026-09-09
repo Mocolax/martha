@@ -143,7 +143,7 @@ def test_one_gzserver_eight_robots_six_arenas_and_contact_topics(tmp_path):
         assert terminated is True
         assert truncated is False
         assert info["collision"] is True
-        assert info["out_of_bounds"] is False
+        assert info["near_obstacle"] is False
 
     finally:
         group.close()

@@ -397,6 +397,7 @@ class WorldMap:
         rng: np.random.Generator,
         min_goal_distance: float = 2.0,
         attempts: int = 500,
+        max_goal_distance: float | None = None,
     ) -> EpisodeSample:
         candidates = np.argwhere(self.free)
         component_labels = np.array(
@@ -429,6 +430,11 @@ class WorldMap:
             distance_field = self.distance_field(goal_x, goal_y)
             shortest_path = float(distance_field[start_row, start_column])
             if not math.isfinite(shortest_path) or shortest_path < min_goal_distance:
+                continue
+            if (
+                max_goal_distance is not None
+                and shortest_path > max_goal_distance
+            ):
                 continue
             return EpisodeSample(
                 start_x=start_x,

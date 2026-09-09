@@ -257,10 +257,10 @@ def test_non_navigable_map_pose_freezes_distance_without_terminating():
 
     # Entering the clearance band is no longer terminal: the episode continues
     # (only a real contact would end it), the distance is frozen to the last
-    # finite value, and out_of_bounds is kept only as a near-obstacle flag.
+    # finite value, and the near_obstacle flag is set.
     assert terminated is False
     assert truncated is False
-    assert info["out_of_bounds"] is True
+    assert info["near_obstacle"] is True
     assert info["stagnated"] is False
     assert reward != pytest.approx(-RewardConfig().out_of_bounds_penalty)
     assert math.isfinite(reward)

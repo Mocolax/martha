@@ -144,7 +144,7 @@ def _write_summary(
         ("episode_reward", "Recompensa", False),
         ("reached_goal", "Tasa de éxito", True),
         ("collision", "Tasa de colisión", True),
-        ("out_of_bounds", "Fuera de límites", True),
+        ("near_obstacle", "Cerca de obstáculo", True),
         ("stagnated", "Tasa de estancamiento", True),
         ("truncated", "Tasa de truncamiento", True),
         ("spl", "SPL", False),
@@ -212,7 +212,6 @@ def _write_summary(
     recommendations = []
     success = means["reached_goal"][1]
     collision = means["collision"][1]
-    out_of_bounds = means["out_of_bounds"][1]
     stagnated = means["stagnated"][1]
     truncated = means["truncated"][1]
     explained = _window_mean(
@@ -233,11 +232,6 @@ def _write_summary(
         recommendations.append(
             "Más de 50% llega al límite de steps: verifica que la recompensa "
             "de progreso domine el costo por paso y que las metas sean alcanzables."
-        )
-    if np.isfinite(out_of_bounds) and out_of_bounds > 0.05:
-        recommendations.append(
-            "Hay salidas del mapa: revisa la geometría, los resets y el margen "
-            "de los límites antes de cambiar PPO."
         )
     if np.isfinite(stagnated) and stagnated > 0.50:
         recommendations.append(
@@ -320,7 +314,7 @@ def generate_training_report(
         ("reached_goal", "Éxito"),
         ("collision", "Colisión"),
         ("truncated", "Truncado"),
-        ("out_of_bounds", "Fuera del mapa"),
+        ("near_obstacle", "Cerca de obstáculo"),
         ("stagnated", "Estancado"),
     ):
         _plot_smoothed(axes[0, 1], episodes, _values(metrics, name), label, window)

@@ -882,13 +882,17 @@ def test_curriculum_episode_cap_breaks_a_stall():
     assert sched.level == 1
 
 
-def test_curriculum_unlocks_to_unrestricted_after_the_last_level():
+def test_curriculum_caps_at_the_top_level_instead_of_unrestricting():
     sched = CurriculumScheduler(_curriculum_args())
     for _ in range(3):
         for _ in range(100):
             sched.record(False)
-    assert sched.unlocked
-    assert sched.current_max_distance() is None
+    # The top level is a permanent ceiling: goals never become unrestricted.
+    assert sched.at_final_level
+    assert sched.current_max_distance() == pytest.approx(18.0)
+    # Further episodes keep the cap and never advance past it.
+    assert sched.record(True) is False
+    assert sched.current_max_distance() == pytest.approx(18.0)
 
 
 def test_training_map_batch_size_enables_recycling_without_scheduler_state():

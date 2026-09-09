@@ -1771,9 +1771,13 @@ class MarthaEnv(_GymEnvBase):
         if has_start != has_goal:
             raise ValueError("Gazebo reset options must provide start and goal together")
         if not has_start:
+            ceiling = options.get("max_goal_distance")
             return world_map.sample_episode(
                 self.np_random,
                 min_goal_distance=self.min_goal_distance,
+                max_goal_distance=(
+                    None if ceiling is None else float(ceiling)
+                ),
             )
 
         start_values = tuple(float(value) for value in options["start"])
@@ -2459,7 +2463,7 @@ class MarthaEnv(_GymEnvBase):
         return observation, reward, False, True, {
             "reached_goal": False,
             "collision": False,
-            "out_of_bounds": False,
+            "near_obstacle": False,
             "stagnated": False,
             "sensor_timeout": True,
             "motor_fault": self.ros.motor_fault,
@@ -2628,7 +2632,7 @@ class MarthaEnv(_GymEnvBase):
             "step": self._step_count,
             "reached_goal": reached_goal,
             "collision": collision,
-            "out_of_bounds": near_obstacle,
+            "near_obstacle": near_obstacle,
             "stagnated": stagnated,
             "sensor_timeout": False,
             "motor_fault": motor_fault,
