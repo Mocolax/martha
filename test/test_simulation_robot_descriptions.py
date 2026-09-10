@@ -90,11 +90,6 @@ def test_shared_single_robot_is_namespaced_without_changing_standalone():
     assert namespace_for(0, 4, False) == "martha_0"
     assert namespace_for(3, 4, False) == "martha_3"
 
-    shared_source = (
-        PROJECT_ROOT / "martha" / "PPO" / "shared_gazebo.py"
-    ).read_text(encoding="utf-8")
-    assert '"force_namespaced_fleet:=true"' in shared_source
-
 
 def test_force_namespaced_fleet_rejects_ambiguous_values():
     parse_boolean = _load_pure_helper("parse_launch_boolean")

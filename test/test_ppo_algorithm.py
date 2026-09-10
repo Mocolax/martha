@@ -43,9 +43,7 @@ from martha.PPO.train import (  # noqa: E402
     METRIC_FIELDS,
     _cuda_rng_states_on_cpu,
     _evaluation_worlds,
-    _truncate_active_for_wall_limit,
     apply_entropy_schedule,
-    CurriculumScheduler,
     entropy_coefficient_for_update,
     policy_std_ceiling_for_update,
     _validate_resume_reward_scale,
@@ -119,14 +117,6 @@ def test_recurrent_batch_normalizes_valid_policy_gae_advantages():
     selected = advantages[policy_valid > 0.5]
     expected = (advantages - selected.mean()) / selected.std(unbiased=False)
     torch.testing.assert_close(prepared[3], expected)
-
-
-def test_single_gazebo_environment_is_always_trainer_managed(monkeypatch):
-    expected = object()
-    args = SimpleNamespace(backend="gazebo", num_envs=1)
-    monkeypatch.setattr(train_module, "train_gazebo", lambda received: expected)
-
-    assert train_module.train(args) is expected
 
 
 def test_truncation_bootstraps_value_while_terminal_does_not():
@@ -558,7 +548,7 @@ def test_periodic_evaluation_uses_editable_training_defaults():
     assert args.physics_step_size == pytest.approx(0.002)
     assert args.lidar_samples == 180
     assert args.training_kinematic is True
-    assert args.map_batch_episodes == TRAINING_DEFAULTS.map_batch_episodes
+    assert args.episodes_per_map == TRAINING_DEFAULTS.episodes_per_map
     assert args.max_wall_time_hours == pytest.approx(24.0)
     assert args.eval_every == TRAINING_DEFAULTS.eval_every
     assert args.eval_episodes == TRAINING_DEFAULTS.eval_episodes
@@ -572,7 +562,7 @@ def test_periodic_evaluation_uses_editable_training_defaults():
     assert _evaluation_worlds(environment, args) == list(range(6))
 
 
-def test_training_cli_only_exposes_resume():
+def test_training_cli_exposes_resume_and_reward_override():
     parser = train_module.build_parser()
     option_strings = {
         option
@@ -580,7 +570,7 @@ def test_training_cli_only_exposes_resume():
         for option in action.option_strings
     }
 
-    assert option_strings == {"-h", "--help", "--resume"}
+    assert option_strings == {"-h", "--help", "--resume", "--override-reward"}
 
 
 def test_evaluation_cli_only_exposes_checkpoint():
@@ -761,7 +751,7 @@ def test_training_rounds_cover_one_seeded_random_cycle_once():
     args = SimpleNamespace(
         backend="gazebo",
         map_index=None,
-        num_envs=8,
+        episodes_per_map=8,
         seed=42,
     )
     world_count = 6
@@ -785,7 +775,7 @@ def test_training_map_blocks_are_seeded_and_resume_without_scheduler_state():
     common = {
         "backend": "gazebo",
         "map_index": None,
-        "num_envs": 8,
+        "episodes_per_map": 8,
     }
     first = SimpleNamespace(seed=42, **common)
     repeat = SimpleNamespace(seed=42, **common)
@@ -815,130 +805,12 @@ def test_training_map_index_override_disables_block_rotation():
     args = SimpleNamespace(
         backend="gazebo",
         map_index=4,
-        num_envs=8,
+        episodes_per_map=8,
         seed=42,
     )
 
     assert training_world_index(args, 6, 1) == 4
     assert training_world_index(args, 6, 200) == 4
-
-
-def test_navigation_curriculum_balances_maps_across_the_catalog():
-    args = SimpleNamespace(
-        backend="gazebo",
-        map_index=None,
-        map_batch_episodes=12,
-        seed=42,
-        episodes=8000,
-        curriculum_enabled=True,
-    )
-
-    early_worlds = {
-        training_world_index(args, 6, episode)
-        for episode in range(1, 73, 12)
-    }
-    assert early_worlds == set(range(6))
-
-
-def _curriculum_args(**overrides):
-    base = dict(
-        curriculum_enabled=True,
-        curriculum_easy_max_distance=6.0,
-        curriculum_medium_max_distance=10.0,
-        curriculum_hard_max_distance=18.0,
-        curriculum_success_threshold=0.55,
-        curriculum_window=10,
-        curriculum_min_episodes=10,
-        curriculum_max_episodes=100,
-    )
-    base.update(overrides)
-    return SimpleNamespace(**base)
-
-
-def test_curriculum_advances_only_after_the_success_threshold_is_cleared():
-    sched = CurriculumScheduler(_curriculum_args())
-    assert sched.current_max_distance() == pytest.approx(6.0)
-
-    # A full window below the threshold must not advance.
-    for _ in range(10):
-        assert sched.record(False) is False
-    assert sched.level == 0
-    assert sched.current_max_distance() == pytest.approx(6.0)
-
-    # Clearing the threshold over a full window advances one level.
-    advanced = [sched.record(True) for _ in range(10)]
-    assert any(advanced)
-    assert sched.level == 1
-    assert sched.current_max_distance() == pytest.approx(10.0)
-
-
-def test_curriculum_episode_cap_breaks_a_stall():
-    sched = CurriculumScheduler(_curriculum_args())
-    advanced = False
-    for _ in range(100):
-        advanced = sched.record(False) or advanced
-    # The per-level cap advances even though success never cleared threshold.
-    assert advanced
-    assert sched.level == 1
-
-
-def test_curriculum_caps_at_the_top_level_instead_of_unrestricting():
-    sched = CurriculumScheduler(_curriculum_args())
-    for _ in range(3):
-        for _ in range(100):
-            sched.record(False)
-    # The top level is a permanent ceiling: goals never become unrestricted.
-    assert sched.at_final_level
-    assert sched.current_max_distance() == pytest.approx(18.0)
-    # Further episodes keep the cap and never advance past it.
-    assert sched.record(True) is False
-    assert sched.current_max_distance() == pytest.approx(18.0)
-
-
-def test_training_map_batch_size_enables_recycling_without_scheduler_state():
-    args = SimpleNamespace(
-        backend="gazebo",
-        map_index=None,
-        num_envs=4,
-        map_batch_episodes=24,
-        seed=42,
-    )
-
-    first = training_world_index(args, 6, 1)
-    second = training_world_index(args, 6, 25)
-
-    assert all(training_world_index(args, 6, episode) == first for episode in range(1, 25))
-    assert second != first
-
-
-def test_hard_wall_limit_marks_active_buffers_as_bootstrapped_truncations():
-    buffers = [RolloutBuffer(), RolloutBuffer()]
-    for buffer in buffers:
-        buffer.store(
-            state=np.zeros(OBSERVATION_SIZE),
-            action=np.zeros(ACTION_SIZE),
-            logprob=0.0,
-            reward=0.0,
-            value=0.0,
-            next_value=0.5,
-            terminated=False,
-            episode_end=False,
-        )
-    active = {
-        index: {
-            "episode": index + 1,
-            "last_info": {"position": (0.0, 0.0, 0.0)},
-        }
-        for index in range(2)
-    }
-
-    finished = _truncate_active_for_wall_limit(active, buffers)
-
-    assert active == {}
-    assert set(finished) == {0, 1}
-    assert all(state["truncated"] for state in finished.values())
-    assert all(state["info"]["wall_time_limit"] for state in finished.values())
-    assert all(buffer.episode_ends[-1] == 1.0 for buffer in buffers)
 
 
 def test_tiny_ppo_update_is_finite_and_changes_parameters():

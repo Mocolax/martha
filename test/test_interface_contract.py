@@ -447,7 +447,6 @@ def test_console_script_targets_exist_without_importing_them():
         "ppo_train",
         "ppo_evaluate",
         "ppo_plot",
-        "ppo_benchmark",
         "ppo_policy",
     }
     assert required == scripts.keys()

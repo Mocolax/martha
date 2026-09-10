@@ -10,7 +10,6 @@ import pytest
 import yaml
 
 from martha.PPO.martha_env import RosObservationNode, external_contact_models
-from martha.PPO.shared_gazebo import SharedGazeboEnvironments
 from martha.PPO.training_layout import (
     MIN_START_SEPARATION,
     WORLD_ORIGINS,
@@ -352,50 +351,6 @@ class _FakeRos:
     def consume_contact_pairs(self, *, after_sequence):
         assert after_sequence == 7
         return set(self.pairs)
-
-
-class _FakeEnvironment:
-    def __init__(self, name, pairs=(), calls=None):
-        self.robot_name = name
-        self.ros = _FakeRos(pairs)
-        self.calls = calls
-
-    def _call_empty(self, operation):
-        if self.calls is not None:
-            self.calls.append(operation)
-
-    def prepare_step(self, action):
-        return SimpleNamespace(contact_sequence=7, action=action)
-
-    def wait_for_step_snapshot(self, pending):
-        return f"snapshot-{self.robot_name}"
-
-    def finish_step(self, pending, snapshot, *, contact_collision):
-        info = {"collision": contact_collision}
-        return snapshot, 0.0, contact_collision, False, info
-
-
-def test_vector_step_unpauses_and_pauses_once_and_ends_both_contact_robots():
-    calls = []
-    pair = (
-        "martha_0::base_link::contact_shell_collision",
-        "martha_1::base_link::contact_shell_collision",
-    )
-    group = object.__new__(SharedGazeboEnvironments)
-    group.environments = [
-        _FakeEnvironment("martha_0", [pair], calls),
-        _FakeEnvironment("martha_1"),
-    ]
-    parked = []
-    group.park = parked.append
-
-    results = group.step_batch(
-        {0: np.zeros(3, dtype=np.float32), 1: np.zeros(3, dtype=np.float32)}
-    )
-
-    assert calls == ["unpause", "pause"]
-    assert results[0][2] and results[1][2]
-    assert parked == [0, 1]
 
 
 def test_world_shuffle_is_reproducible_and_has_no_repeats_per_cycle():

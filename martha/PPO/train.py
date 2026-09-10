@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
-from collections import deque
 import csv
 from dataclasses import asdict, dataclass
 from datetime import datetime
 import math
+import os
 from pathlib import Path
 import random
+import signal
+import subprocess
+import sys
 import time
 from typing import Any, Iterable
 
@@ -39,8 +42,12 @@ from .martha_env import MarthaEnv
 from .network import ActorCritic
 from .observations import DEFAULT_GOAL_DISTANCE_SCALE
 from .reward import REWARD_COMPONENT_NAMES, RewardConfig
-from .training_layout import shuffled_world_index
-from .world_map import TRAINING_WORLD_NAMES
+from .training_layout import (
+    WORLD_ORIGINS,
+    create_combined_training_world,
+    shuffled_world_index,
+)
+from .world_map import discover_worlds
 from martha.simulation_speed import (
     validate_physics_step_size,
     validate_sim_speed_factor,
@@ -54,29 +61,20 @@ class TrainingDefaults:
     # An upper bound, not a commitment: max_wall_time_hours ends the run
     # first and the best evaluated policy is checkpointed along the way.
     episodes: int = 6000
-    num_envs: int = 4
     sim_speed_factor: float = 5.0
     physics_step_size: float = 0.002
     lidar_samples: int = 180
     training_kinematic: bool = True
     gazebo_gui: bool = False
     gazebo_startup_timeout: float = 240.0
-    training_points: Path | None = None
     max_steps: int = 1400
-    map_batch_episodes: int = 4
-    curriculum_enabled: bool = True
-    # The ceiling advances by mastery, not by episode count: it rises to the
-    # next distance only once the rolling success rate clears the threshold
-    # over a full window, with a per-level episode cap as a stall fallback.
-    curriculum_easy_max_distance: float = 6.0
-    curriculum_medium_max_distance: float = 8.0
-    curriculum_hard_max_distance: float = 10.0
-    curriculum_success_threshold: float = 0.55
-    curriculum_window: int = 200
-    curriculum_min_episodes: int = 300
-    curriculum_max_episodes: int = 2000
+    # One Martha trains alone, rotating through the six arenas of the combined
+    # world. She stays on one arena for this many episodes before moving on, so
+    # every map gets a fair, reproducible share of experience.
+    episodes_per_map: int = 4
+    # No curriculum: every episode samples a goal at a fully random geodesic
+    # distance (>= min_goal_distance, up to whatever the arena allows).
     max_wall_time_hours: float = 24.0
-    shutdown_grace_minutes: float = 30.0
     rollout_steps: int = 1024
     ppo_epochs: int = 8
     minibatch_size: int = 256
@@ -113,6 +111,9 @@ class TrainingDefaults:
     policy_std_initial: float = 0.40
     policy_std_final: float = 0.25
     reward_scale: float = 1
+    # Resume replays the checkpoint reward by default. Enable this (or pass
+    # --override-reward) to instead apply the current RewardConfig() and warn.
+    override_reward: bool = False
     max_grad_norm: float = 0.5
     eval_every: int = 100
     eval_episodes: int = 2
@@ -139,15 +140,6 @@ class TrainingDefaults:
 
 
 DEFAULTS = TrainingDefaults()
-
-CURRICULUM_WORLD_ORDER = (
-    "room",
-    "roblab",
-    "hall",
-    "tube",
-    "four_rooms",
-    "multi",
-)
 
 
 METRIC_FIELDS = [
@@ -210,45 +202,6 @@ _EMPTY_BEST_EVAL = {
 }
 
 
-@dataclass
-class TrainingTimings:
-    """Cumulative wall-clock profile for one training attempt."""
-
-    started_at: float
-    training_steps: int = 0
-    physics_wall_s: float = 0.0
-    reset_wall_s: float = 0.0
-    ppo_wall_s: float = 0.0
-    evaluation_wall_s: float = 0.0
-    checkpoint_wall_s: float = 0.0
-
-    @classmethod
-    def start(cls) -> "TrainingTimings":
-        return cls(started_at=time.monotonic())
-
-    def metric_values(self) -> dict[str, float | int]:
-        elapsed = max(time.monotonic() - self.started_at, 1e-9)
-        return {
-            "elapsed_wall_s": elapsed,
-            "training_steps": self.training_steps,
-            "training_steps_per_second": self.training_steps / elapsed,
-            "physics_wall_s": self.physics_wall_s,
-            "reset_wall_s": self.reset_wall_s,
-            "ppo_wall_s": self.ppo_wall_s,
-            "evaluation_wall_s": self.evaluation_wall_s,
-            "checkpoint_wall_s": self.checkpoint_wall_s,
-        }
-
-
-def _empty_eval_stats() -> dict[str, float]:
-    return {
-        "eval_mean_reward": math.nan,
-        "eval_success_rate": math.nan,
-        "eval_collision_rate": math.nan,
-        "eval_mean_spl": math.nan,
-    }
-
-
 def build_parser() -> argparse.ArgumentParser:
     """Build the minimal training command-line interface."""
     parser = argparse.ArgumentParser(
@@ -261,6 +214,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULTS.resume,
         help="Resume model, optimizer and episode number from a checkpoint.",
     )
+    parser.add_argument(
+        "--override-reward",
+        action="store_true",
+        default=DEFAULTS.override_reward,
+        help="On --resume, force the current RewardConfig() without the "
+        "interactive prompt (for background runs); the critic must re-adapt.",
+    )
     return parser
 
 
@@ -268,9 +228,8 @@ def _validate_args(args: argparse.Namespace) -> None:
     """Reject invalid and unsafe settings before creating an environment."""
     positive_ints = {
         "episodes": args.episodes,
-        "num_envs": args.num_envs,
         "max_steps": args.max_steps,
-        "map_batch_episodes": args.map_batch_episodes,
+        "episodes_per_map": args.episodes_per_map,
         "rollout_steps": args.rollout_steps,
         "ppo_epochs": args.ppo_epochs,
         "minibatch_size": args.minibatch_size,
@@ -304,8 +263,6 @@ def _validate_args(args: argparse.Namespace) -> None:
         )
     if args.map_index is not None and args.map_index < 0:
         raise ValueError("TrainingDefaults.map_index cannot be negative")
-    if args.backend == "hardware" and args.num_envs != 1:
-        raise ValueError("hardware training requires num_envs=1")
     if args.gazebo_startup_timeout <= 0.0:
         raise ValueError("gazebo_startup_timeout must be positive")
     validate_sim_speed_factor(args.sim_speed_factor)
@@ -337,11 +294,6 @@ def _validate_args(args: argparse.Namespace) -> None:
         "gazebo-startup-timeout": args.gazebo_startup_timeout,
         "physics-step-size": args.physics_step_size,
         "max-wall-time-hours": args.max_wall_time_hours,
-        "shutdown-grace-minutes": args.shutdown_grace_minutes,
-        "curriculum-success-threshold": args.curriculum_success_threshold,
-        "curriculum-easy-max-distance": args.curriculum_easy_max_distance,
-        "curriculum-medium-max-distance": args.curriculum_medium_max_distance,
-        "curriculum-hard-max-distance": args.curriculum_hard_max_distance,
     }
     for name, value in numeric_values.items():
         if not math.isfinite(float(value)):
@@ -377,38 +329,6 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError(
             "policy STD limits must satisfy 0 < final <= initial"
         )
-    if not 0.0 < args.curriculum_success_threshold <= 1.0:
-        raise ValueError(
-            "curriculum_success_threshold must be in (0, 1]"
-        )
-    if not (
-        args.curriculum_window > 0
-        and args.curriculum_min_episodes > 0
-        and args.curriculum_max_episodes >= args.curriculum_window
-    ):
-        raise ValueError(
-            "curriculum window/min must be positive and max must be at least "
-            "the window"
-        )
-    curriculum_distances = (
-        args.curriculum_easy_max_distance,
-        args.curriculum_medium_max_distance,
-        args.curriculum_hard_max_distance,
-    )
-    if not (
-        args.min_goal_distance <= curriculum_distances[0]
-        <= curriculum_distances[1]
-        <= curriculum_distances[2]
-    ):
-        raise ValueError(
-            "curriculum route distances must increase from min_goal_distance"
-        )
-    if args.shutdown_grace_minutes < 0.0:
-        raise ValueError("shutdown_grace_minutes cannot be negative")
-    if args.shutdown_grace_minutes >= args.max_wall_time_hours * 60.0:
-        raise ValueError(
-            "shutdown_grace_minutes must be below max_wall_time_hours"
-        )
     if args.backend == "hardware":
         if args.goal is None:
             raise ValueError("hardware training requires TrainingDefaults.goal")
@@ -424,6 +344,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parsed = parser.parse_args(argv)
     values = asdict(DEFAULTS)
     values["resume"] = parsed.resume
+    values["override_reward"] = parsed.override_reward
     args = argparse.Namespace(**values)
     try:
         _validate_args(args)
@@ -582,6 +503,90 @@ def reward_config_from_checkpoint(
         raise ValueError("checkpoint reward_config has invalid fields") from exc
 
 
+def _resolve_reward_config(
+    args: argparse.Namespace,
+    checkpoint: dict[str, Any] | None,
+) -> RewardConfig:
+    """Pick this run's reward, honoring an explicit resume override.
+
+    A plain resume replays the checkpoint's saved reward so the restored critic
+    and optimizer stay consistent with what they were fitted to. With
+    ``--override-reward`` the current ``RewardConfig()`` is applied instead and
+    the changed fields are printed, because the loaded critic must re-adapt to
+    the new reward and a transient performance dip is expected.
+    """
+    if checkpoint is None or not getattr(args, "override_reward", False):
+        return reward_config_from_checkpoint(checkpoint)
+    new_reward = RewardConfig()
+    print(
+        "WARNING: --override-reward: replacing the checkpoint reward with the "
+        "current RewardConfig() defaults. The resumed critic and optimizer were "
+        "trained on the old reward; expect a transient dip while they re-adapt.",
+        flush=True,
+    )
+    saved = checkpoint.get("config", {}).get("reward_config")
+    if isinstance(saved, dict):
+        new_fields = asdict(new_reward)
+        changes = [
+            f"    {key}: {saved.get(key)} -> {new_fields[key]}"
+            for key in sorted(new_fields)
+            if saved.get(key) != new_fields[key]
+        ]
+        if changes:
+            print("Reward changes on resume:", flush=True)
+            for line in changes:
+                print(line, flush=True)
+        else:
+            print(
+                "  (reward values are identical to the checkpoint)", flush=True
+            )
+    return new_reward
+
+
+def _maybe_prompt_reward_override(
+    args: argparse.Namespace,
+    checkpoint: dict[str, Any] | None,
+) -> None:
+    """Ask, when resuming interactively, whether to adopt a changed reward.
+
+    A resume replays the checkpoint reward by default. When the current
+    ``RewardConfig()`` differs and no ``--override-reward`` was passed, prompt
+    once: a yes flips on the override, a no (or no interactive terminal) keeps
+    the saved reward. This keeps the ordinary resume a single ``--resume``.
+    """
+    if checkpoint is None or getattr(args, "override_reward", False):
+        return
+    saved = checkpoint.get("config", {}).get("reward_config")
+    current = asdict(RewardConfig())
+    if not isinstance(saved, dict) or set(saved) != set(current):
+        return
+    changes = [
+        f"    {key}: {saved[key]} -> {current[key]}"
+        for key in sorted(current)
+        if saved[key] != current[key]
+    ]
+    if not changes:
+        return
+    print("El reward actual difiere del guardado en el checkpoint:", flush=True)
+    for line in changes:
+        print(line, flush=True)
+    if not sys.stdin.isatty():
+        print(
+            "Sin terminal interactiva: se mantiene el reward del checkpoint. "
+            "Pasa --override-reward para forzar el reward nuevo.",
+            flush=True,
+        )
+        return
+    answer = input(
+        "¿Continuar con el reward NUEVO? El crítico deberá re-adaptarse "
+        "[y/N]: "
+    ).strip().lower()
+    if answer in ("y", "yes", "s", "si", "sí"):
+        args.override_reward = True
+    else:
+        print("Manteniendo el reward del checkpoint.", flush=True)
+
+
 def _warn_legacy_reward_config(checkpoint: dict[str, Any] | None) -> None:
     """Make the intentional paper-reward fallback visible for old runs."""
     if checkpoint is None:
@@ -613,13 +618,19 @@ def environment_kwargs(
         if resume_checkpoint is not None
         else _action_limits_from_args(args)
     )
-    reward_config = reward_config_from_checkpoint(resume_checkpoint)
+    reward_config = _resolve_reward_config(args, resume_checkpoint)
+    # On Gazebo the six arenas live at once inside the combined world, each
+    # shifted to its WORLD_ORIGINS offset. Passing the origins moves every
+    # map's free-space definition to the same offset, so the goals we sample
+    # and teleport to line up with the geometry Gazebo actually renders.
+    world_origins = None if args.backend == "hardware" else WORLD_ORIGINS
     return {
         "action_mode": "continuous",
         "render_mode": None,
         "map_mode": args.map_mode,
         "map_index": args.map_index,
         "backend": args.backend,
+        "world_origins": world_origins,
         "scan_range_max": _runtime_value(
             resume_checkpoint,
             "scan_range_max",
@@ -699,6 +710,14 @@ def _validate_resume_reward_scale(
         rel_tol=0.0,
         abs_tol=1e-12,
     ):
+        if getattr(args, "override_reward", False):
+            print(
+                "WARNING: --override-reward: reward_scale "
+                f"{saved_scale} -> {args.reward_scale}; the critic's target "
+                "scale changes, so its restored values are stale.",
+                flush=True,
+            )
+            return
         raise ValueError(
             "TrainingDefaults.reward_scale must match the checkpoint "
             f"({args.reward_scale} != {saved_scale})"
@@ -912,7 +931,12 @@ def training_world_index(
     world_count: int,
     episode: int,
 ) -> int | None:
-    """Choose the reproducible shared map for an episode's group round."""
+    """Pick which arena this episode trains on (reproducible from the seed).
+
+    The lone robot stays on one arena for ``episodes_per_map`` episodes, then
+    the next block reshuffles to another arena. There is no curriculum: which
+    map comes when is decided only by the seed, so a rerun is reproducible.
+    """
     if args.backend == "hardware":
         return None
     if args.map_index is not None:
@@ -921,130 +945,11 @@ def training_world_index(
         raise ValueError("Gazebo training requires at least one world")
     if episode <= 0:
         raise ValueError("training episode must be positive")
-
-    block_size = int(
-        getattr(args, "map_batch_episodes", getattr(args, "num_envs", 1))
-    )
+    block_size = int(args.episodes_per_map)
     if block_size <= 0:
-        raise ValueError("map_batch_episodes must be positive")
+        raise ValueError("episodes_per_map must be positive")
     round_index = (episode - 1) // block_size
-    if not bool(getattr(args, "curriculum_enabled", False)):
-        return shuffled_world_index(args.seed, round_index, world_count)
-
-    total_episodes = int(args.episodes)
-    if total_episodes <= 0:
-        raise ValueError("episodes must be positive for curriculum training")
-    available_names = set(TRAINING_WORLD_NAMES[:world_count])
-    eligible_names = [
-        name
-        for name in CURRICULUM_WORLD_ORDER
-        if name in available_names
-    ]
-    if not eligible_names:
-        raise ValueError("curriculum has no available training worlds")
-    selected = shuffled_world_index(
-        args.seed,
-        round_index,
-        len(eligible_names),
-    )
-    return TRAINING_WORLD_NAMES.index(eligible_names[selected])
-
-
-def training_world_indices_for_round(
-    args: argparse.Namespace,
-    world_count: int,
-    episodes: list[int],
-) -> list[int]:
-    """Assign concurrent fleet episodes to distinct preloaded map islands."""
-    if not episodes:
-        return []
-    if len(episodes) > world_count:
-        raise ValueError("a mixed round cannot exceed the map count")
-    if args.map_index is not None:
-        return [int(args.map_index)] * len(episodes)
-    round_index = (episodes[0] - 1) // max(1, args.map_batch_episodes)
-    first = shuffled_world_index(args.seed, round_index, world_count)
-    return [
-        (first + offset) % world_count
-        for offset in range(len(episodes))
-    ]
-
-
-class CurriculumScheduler:
-    """
-    Raise the goal-distance ceiling by mastery instead of episode count.
-
-    The ceiling advances to the next level only when the rolling success rate
-    over a full window clears the threshold, so the policy consolidates each
-    distance (and its obstacle avoidance) before facing longer routes. A
-    per-level episode cap advances anyway if progress stalls, so a hard level
-    can never wedge the run.
-    """
-
-    def __init__(self, args: argparse.Namespace) -> None:
-        self.enabled = bool(getattr(args, "curriculum_enabled", False))
-        self._levels = (
-            float(args.curriculum_easy_max_distance),
-            float(args.curriculum_medium_max_distance),
-            float(args.curriculum_hard_max_distance),
-        )
-        self.threshold = float(args.curriculum_success_threshold)
-        self.window = int(args.curriculum_window)
-        self.min_episodes = int(args.curriculum_min_episodes)
-        self.max_episodes = int(args.curriculum_max_episodes)
-        self.level = 0
-        self._outcomes: deque = deque(maxlen=self.window)
-        self._episodes_at_level = 0
-
-    @property
-    def at_final_level(self) -> bool:
-        """Whether the scheduler sits at its permanent top ceiling."""
-        return self.level >= len(self._levels) - 1
-
-    def current_max_distance(self) -> float | None:
-        """Return the active geodesic ceiling, capped at the top level."""
-        if not self.enabled:
-            return None
-        return self._levels[min(self.level, len(self._levels) - 1)]
-
-    def rolling_success(self) -> float:
-        """Return the success rate over the current window."""
-        if not self._outcomes:
-            return 0.0
-        return sum(self._outcomes) / len(self._outcomes)
-
-    def record(self, reached_goal: bool) -> bool:
-        """Record one finished episode; return True if the level advanced."""
-        if not self.enabled or self.at_final_level:
-            return False
-        self._outcomes.append(1.0 if reached_goal else 0.0)
-        self._episodes_at_level += 1
-        mastered = (
-            len(self._outcomes) >= self.window
-            and self._episodes_at_level >= self.min_episodes
-            and self.rolling_success() >= self.threshold
-        )
-        stalled = self._episodes_at_level >= self.max_episodes
-        if mastered or stalled:
-            self.level += 1
-            self._outcomes.clear()
-            self._episodes_at_level = 0
-            return True
-        return False
-
-    def state_dict(self) -> dict:
-        """Return the resumable curriculum position."""
-        return {
-            "level": int(self.level),
-            "episodes_at_level": int(self._episodes_at_level),
-        }
-
-    def load_state(self, state: Any) -> None:
-        """Restore the curriculum position from a checkpoint."""
-        if isinstance(state, dict):
-            self.level = int(state.get("level", 0))
-            self._episodes_at_level = int(state.get("episodes_at_level", 0))
-            self._outcomes.clear()
+    return shuffled_world_index(args.seed, round_index, world_count)
 
 
 def training_reset_options(
@@ -1057,127 +962,6 @@ def training_reset_options(
         args,
         training_world_index(args, world_count, episode),
     )
-
-
-def _parallel_episode_state(
-    observation: np.ndarray,
-    reset_info: dict[str, Any],
-    *,
-    episode: int | None = None,
-) -> dict[str, Any]:
-    """Build the mutable accounting state for one parallel episode."""
-    shortest, previous_position, path_length = episode_path_state(reset_info)
-    return {
-        "observation": observation,
-        "shortest": shortest,
-        "previous_position": previous_position,
-        "path_length": path_length,
-        "reward": 0.0,
-        "scaled_reward": 0.0,
-        "reward_components": _empty_reward_components(),
-        "length": 0,
-        "episode": episode,
-        "last_info": dict(reset_info),
-    }
-
-
-def _evaluate_recorded_actions(
-    network: ActorCritic,
-    observations: np.ndarray,
-    actions: np.ndarray,
-    recurrent_state: Any,
-) -> tuple[torch.Tensor, torch.Tensor, Any]:
-    """Evaluate externally selected actions for critic-only transitions."""
-    device = next(network.parameters()).device
-    states = torch.as_tensor(observations, dtype=torch.float32, device=device)
-    action_values = torch.as_tensor(actions, dtype=torch.float32, device=device)
-    with torch.no_grad():
-        dist, values, next_recurrent = network.forward_recurrent(
-            states,
-            recurrent_state,
-        )
-        dist = torch.distributions.Normal(
-            dist.mean[:, 0],
-            dist.stddev[:, 0],
-        )
-        logprobs = network._squashed_log_prob(dist, action_values)
-    return logprobs.cpu(), values[:, 0].cpu(), next_recurrent
-
-
-def _record_shared_transition(
-    *,
-    state: dict[str, Any],
-    transition: tuple[np.ndarray, float, bool, bool, dict[str, Any]],
-    action: np.ndarray,
-    logprob: Any,
-    value: Any,
-    next_value: Any,
-    buffer: RolloutBuffer,
-    reward_scale: float,
-    timings: TrainingTimings,
-    policy_sample: bool,
-    next_recurrent_state: Any,
-) -> bool:
-    """Store and account for one fleet transition."""
-    next_observation, reward, terminated, truncated, info = transition
-    episode_end = bool(terminated or truncated)
-    buffer.store(
-        state=state["observation"],
-        action=action,
-        logprob=logprob,
-        reward=scale_reward_for_ppo(reward, reward_scale),
-        value=value,
-        next_value=(0.0 if terminated else next_value),
-        terminated=terminated,
-        episode_end=episode_end,
-        policy_sample=policy_sample,
-        recurrent_state=state["recurrent_state"],
-        episode_start=state["episode_start"],
-    )
-    state["reward"] += float(reward)
-    state["scaled_reward"] += scale_reward_for_ppo(reward, reward_scale)
-    _accumulate_reward_components(state["reward_components"], info)
-    state["length"] += 1
-    state["previous_position"], state["path_length"] = advance_path(
-        state["previous_position"],
-        state["path_length"],
-        info,
-    )
-    state["observation"] = next_observation
-    state["recurrent_state"] = next_recurrent_state
-    state["episode_start"] = False
-    state["last_info"] = dict(info)
-    timings.training_steps += 1
-    if episode_end:
-        state.update(
-            terminated=bool(terminated),
-            truncated=bool(truncated),
-            info=info,
-        )
-    return episode_end
-
-
-def _truncate_active_for_wall_limit(
-    active: dict[int, dict[str, Any]],
-    buffers: list[RolloutBuffer],
-) -> dict[int, dict[str, Any]]:
-    """Finish active episodes as bootstrapped truncations at the hard deadline."""
-    finished = {}
-    for index, state in list(active.items()):
-        if len(buffers[index]) > 0:
-            buffers[index].episode_ends[-1] = 1.0
-        info = dict(state.get("last_info", {}))
-        info.update(
-            reached_goal=False,
-            collision=False,
-            out_of_bounds=False,
-            stagnated=False,
-            wall_time_limit=True,
-        )
-        state.update(terminated=False, truncated=True, info=info)
-        finished[index] = state
-        del active[index]
-    return finished
 
 
 def _confirm_hardware_reset(
@@ -1338,10 +1122,84 @@ def _checkpoint_paths(run_dir: Path) -> tuple[Path, Path, Path]:
     )
 
 
+def _stop_launch_process(process: "subprocess.Popen[Any] | None") -> None:
+    """Shut down the Gazebo launch cleanly (SIGINT, then escalate)."""
+    if process is None or process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGINT)
+        process.wait(timeout=15.0)
+    except (ProcessLookupError, subprocess.TimeoutExpired):
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5.0)
+
+
+def _launch_training_gazebo(
+    args: argparse.Namespace,
+    world_path: Path,
+    log_path: Path,
+) -> tuple["subprocess.Popen[Any]", Any]:
+    """Start one headless Gazebo with a single Martha in the given world.
+
+    Unlike the old fleet trainer this owns exactly one gzserver and one robot
+    (``robot_count:=1``), with the plain ``/scan`` and ``/cmd_vel`` topics that
+    MarthaEnv expects by default. Gazebo's stdout/stderr go to ``log_path``.
+    """
+    log_stream = log_path.open("a", encoding="utf-8")
+    command = [
+        "ros2", "launch", "martha", "simulation.launch.py",
+        f"gui:={'true' if args.gazebo_gui else 'false'}",
+        f"sim_speed_factor:={args.sim_speed_factor}",
+        f"physics_step_size:={args.physics_step_size}",
+        f"lidar_samples:={args.lidar_samples}",
+        "lidar_visualize:=false",
+        f"training_kinematic:={'true' if args.training_kinematic else 'false'}",
+        f"world:={world_path}",
+        "robot_count:=1",
+    ]
+    process = subprocess.Popen(
+        command,
+        stdout=log_stream,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    return process, log_stream
+
+
+def _wait_for_gazebo_ready(
+    env: MarthaEnv,
+    process: "subprocess.Popen[Any]",
+    timeout: float,
+) -> None:
+    """Block until Gazebo has spawned the robot, or fail fast if it died."""
+    deadline = time.monotonic() + float(timeout)
+    while not env.ros.gazebo_model_names():
+        if process.poll() is not None:
+            raise RuntimeError(
+                "Gazebo exited before it finished starting; see the run's "
+                "gazebo.log"
+            )
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"Gazebo did not become ready within {timeout:.0f} s"
+            )
+        time.sleep(0.25)
+
+
 def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
-    """Run managed Gazebo training or explicitly opted-in hardware training."""
-    if args.backend == "gazebo":
-        return train_gazebo(args)
+    """Train the navigation policy with a single Martha in Gazebo.
+
+    Owns the whole run: launch one headless Gazebo with a single robot in the
+    combined six-arena world, drive the PPO episode loop (random goal
+    distances, no curriculum), checkpoint the best/last policy, and tear Gazebo
+    down on the way out. The ``hardware`` backend reuses the same loop against a
+    real robot and never launches Gazebo.
+    """
     _validate_args(args)
     set_seed(args.seed)
     device = choose_device(args.device)
@@ -1353,14 +1211,45 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
     _warn_legacy_reward_config(resume_checkpoint)
     if resume_checkpoint is not None:
         validate_checkpoint_data(resume_checkpoint, require_optimizer=True)
+        _maybe_prompt_reward_override(args, resume_checkpoint)
         _validate_resume_reward_scale(args, resume_checkpoint)
     run_dir = make_run_dir(args)
     metrics_path, last_model_path, best_model_path = _checkpoint_paths(run_dir)
-    env = make_environment(args, resume_checkpoint)
+
+    # Bring up one headless Gazebo with a single Martha in the combined world
+    # (six arenas at their offsets). Hardware training launches nothing.
+    launch_process = None
+    log_stream = None
+    combined_world = None
+    if args.backend == "gazebo":
+        combined_world = create_combined_training_world(
+            discover_worlds(_package_asset_path("worlds"))
+        )
+        launch_process, log_stream = _launch_training_gazebo(
+            args, combined_world, run_dir / "gazebo.log"
+        )
+
+    def _shutdown_gazebo() -> None:
+        _stop_launch_process(launch_process)
+        if log_stream is not None:
+            log_stream.close()
+        if combined_world is not None:
+            combined_world.unlink(missing_ok=True)
+
+    try:
+        env = make_environment(args, resume_checkpoint)
+        if args.backend == "gazebo":
+            _wait_for_gazebo_ready(
+                env, launch_process, args.gazebo_startup_timeout
+            )
+    except Exception:
+        _shutdown_gazebo()
+        raise
     try:
         network, ppo = build_agent(args, device)
     except Exception:
         env.close()
+        _shutdown_gazebo()
         raise
     buffer = RolloutBuffer()
     start_episode = 1
@@ -1384,9 +1273,11 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
             )
         except Exception:
             env.close()
+            _shutdown_gazebo()
             raise
         if start_episode > args.episodes:
             env.close()
+            _shutdown_gazebo()
             raise ValueError(
                 "TrainingDefaults.episodes must exceed the resumed episode"
             )
@@ -1405,8 +1296,19 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
 
     last_update_stats = dict(_EMPTY_UPDATE_STATS)
     completed_episode = start_episode - 1
+    # Stop starting new episodes past this wall-clock budget; the best and last
+    # policies are already checkpointed, so a run can be capped safely.
+    training_started = time.monotonic()
+    wall_time_budget = args.max_wall_time_hours * 3600.0
     try:
         for episode in range(start_episode, args.episodes + 1):
+            if time.monotonic() - training_started >= wall_time_budget:
+                print(
+                    f"Wall-time budget of {args.max_wall_time_hours:.2f} h "
+                    f"reached at episode {episode}; stopping.",
+                    flush=True,
+                )
+                break
             train_seed = episode_seed(args.seed, 0, episode)
             _confirm_hardware_reset(args, f"training episode {episode}")
             observation, reset_info = env.reset(
@@ -1635,643 +1537,12 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
             )
     finally:
         env.close()
+        _shutdown_gazebo()
 
     print("Training finished.")
     print(f"Metrics: {metrics_path}")
     print(f"Last model: {last_model_path}")
     print(f"Best model: {best_model_path}")
-    _generate_training_report(metrics_path)
-    return network, ppo
-
-
-def evaluate_shared_policy(
-    network: ActorCritic,
-    group: Any,
-    args: argparse.Namespace,
-    evaluation_round: int,
-) -> dict[str, float]:
-    """Evaluate one robot while the rest remain outside every arena."""
-    rewards: list[float] = []
-    successes: list[float] = []
-    collisions: list[float] = []
-    spl_values: list[float] = []
-    was_training = network.training
-    network.eval()
-    try:
-        with torch.no_grad():
-            worlds = _evaluation_worlds(group.reference_env, args)
-            for world_index in worlds:
-                assert world_index is not None
-                for eval_episode in range(args.eval_episodes):
-                    seed = episode_seed(
-                        args.seed,
-                        1,
-                        evaluation_round,
-                        world_index,
-                        eval_episode,
-                    )
-                    observation, reset_info = group.reset_single(
-                        robot_index=0,
-                        world_index=world_index,
-                        seed=seed,
-                    )
-                    shortest, previous_position, path_length = (
-                        episode_path_state(reset_info)
-                    )
-                    total_reward = 0.0
-                    info: dict[str, Any] = {}
-                    terminated = truncated = False
-                    recurrent_state = network.initial_recurrent_state(1)
-                    episode_start = True
-                    for _ in range(args.eval_max_steps):
-                        action, _, _, recurrent_state = (
-                            network.get_actions_recurrent(
-                                observation,
-                                recurrent_state,
-                                episode_starts=[episode_start],
-                                deterministic=True,
-                            )
-                        )
-                        action = action.squeeze(0)
-                        episode_start = False
-                        transition = group.step_batch(
-                            {0: action.numpy().astype(np.float32)}
-                        )[0]
-                        observation, reward, terminated, truncated, info = transition
-                        total_reward += float(reward)
-                        previous_position, path_length = advance_path(
-                            previous_position,
-                            path_length,
-                            info,
-                        )
-                        if terminated or truncated:
-                            break
-                    if not (terminated or truncated):
-                        group.park(0)
-                    success = bool(info.get("reached_goal", False))
-                    rewards.append(total_reward)
-                    successes.append(float(success))
-                    collisions.append(float(bool(info.get("collision", False))))
-                    spl_values.append(
-                        calculate_spl(success, shortest, path_length)
-                    )
-    finally:
-        group.park_all()
-        network.train(was_training)
-    finite_spl = [value for value in spl_values if math.isfinite(value)]
-    return {
-        "eval_mean_reward": float(np.mean(rewards)),
-        "eval_success_rate": float(np.mean(successes)),
-        "eval_collision_rate": float(np.mean(collisions)),
-        "eval_mean_spl": float(np.mean(finite_spl)) if finite_spl else math.nan,
-    }
-
-
-def _shared_metric_row(
-    episode: int,
-    state: dict[str, Any],
-    update_stats: dict[str, float],
-    eval_stats: dict[str, float],
-    best_eval_metrics: dict[str, float],
-    timing_metrics: dict[str, float | int] | None = None,
-) -> dict[str, Any]:
-    info = state["info"]
-    success = bool(info.get("reached_goal", False))
-    return {
-        "episode": episode,
-        "world_index": info.get("world_index"),
-        "shortest_path": state["shortest"],
-        "episode_reward": state["reward"],
-        "episode_scaled_reward": state["scaled_reward"],
-        **state["reward_components"],
-        "episode_length": state["length"],
-        "terminated": int(state["terminated"]),
-        "truncated": int(state["truncated"]),
-        "reached_goal": int(success),
-        "collision": int(bool(info.get("collision", False))),
-        "near_obstacle": int(bool(info.get("near_obstacle", False))),
-        "stagnated": int(bool(info.get("stagnated", False))),
-        "spl": calculate_spl(
-            success,
-            state["shortest"],
-            state["path_length"],
-        ),
-        **({} if timing_metrics is None else timing_metrics),
-        **update_stats,
-        **eval_stats,
-        "best_eval_success_rate": best_eval_metrics["eval_success_rate"],
-        "best_eval_collision_rate": best_eval_metrics["eval_collision_rate"],
-        "best_eval_mean_spl": best_eval_metrics["eval_mean_spl"],
-        "best_eval_mean_reward": best_eval_metrics["eval_mean_reward"],
-    }
-
-
-def train_gazebo(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
-    """Train a continuously recycled Martha fleet in one Gazebo process."""
-    from .shared_gazebo import (
-        RecyclePlacementUnavailable,
-        SharedGazeboEnvironments,
-    )
-
-    timings = TrainingTimings.start()
-    _validate_args(args)
-    if args.backend != "gazebo":
-        raise ValueError("shared Gazebo training requires backend='gazebo'")
-    set_seed(args.seed)
-    device = choose_device(args.device)
-    resume_checkpoint = (
-        None if args.resume is None else load_checkpoint_file(args.resume, device)
-    )
-    _warn_legacy_reward_config(resume_checkpoint)
-    if resume_checkpoint is not None:
-        validate_checkpoint_data(resume_checkpoint, require_optimizer=True)
-        _validate_resume_reward_scale(args, resume_checkpoint)
-    run_dir = make_run_dir(args)
-    metrics_path, last_model_path, best_model_path = _checkpoint_paths(run_dir)
-    points_path = (
-        _package_asset_path("config/training_points.yaml")
-        if args.training_points is None
-        else args.training_points.expanduser().resolve()
-    )
-    group = SharedGazeboEnvironments(
-        count=args.num_envs,
-        sim_speed_factor=args.sim_speed_factor,
-        physics_step_size=args.physics_step_size,
-        lidar_samples=args.lidar_samples,
-        training_kinematic=args.training_kinematic,
-        show_gui=args.gazebo_gui,
-        startup_timeout=args.gazebo_startup_timeout,
-        run_directory=run_dir,
-        worlds_directory=_package_asset_path("worlds"),
-        points_path=points_path,
-        environment_kwargs=environment_kwargs(args, resume_checkpoint),
-    )
-    reference_env = group.reference_env
-    hard_deadline = timings.started_at + args.max_wall_time_hours * 3600.0
-    assignment_deadline = hard_deadline - args.shutdown_grace_minutes * 60.0
-    wall_limit_reached = False
-    try:
-        network, ppo = build_agent(args, device)
-        start_episode = 1
-        completed_updates = 0
-        best_eval_metrics = dict(_EMPTY_BEST_EVAL)
-        if resume_checkpoint is not None:
-            validate_checkpoint_data(
-                resume_checkpoint,
-                expected_contract=reference_env.policy_contract,
-                require_optimizer=True,
-            )
-            (
-                start_episode,
-                best_eval_metrics,
-                completed_updates,
-            ) = _restore_resume_state(
-                resume_checkpoint,
-                network,
-                ppo,
-            )
-        if start_episode > args.episodes:
-            raise ValueError(
-                "TrainingDefaults.episodes must exceed the resumed episode"
-            )
-
-        print(f"Device: {device}")
-        print("Backend: shared Gazebo")
-        print(f"Martha robots: {args.num_envs}")
-        print("Gazebo servers: 1")
-        print(f"Training kinematics: {args.training_kinematic}")
-        print(f"Physics step: {args.physics_step_size:.4f} s")
-        print(f"LiDAR samples: {args.lidar_samples}")
-        curriculum = CurriculumScheduler(args)
-        print(f"Map batch: {args.map_batch_episodes} episodes")
-        if args.curriculum_enabled:
-            print(
-                "Navigation curriculum: mastery-gated "
-                f"(threshold {args.curriculum_success_threshold:.0%}, "
-                f"window {args.curriculum_window}, "
-                f"cap {args.curriculum_max_episodes} ep/level)"
-            )
-        else:
-            print("Navigation curriculum: disabled")
-        print(f"Hard wall-time limit: {args.max_wall_time_hours:.2f} h")
-        print(f"Run directory: {run_dir}")
-        print(f"Training points: {points_path}")
-        print(f"Observation shape: {reference_env.observation_space.shape}")
-        print(f"Action shape: {reference_env.action_space.shape}")
-
-        buffers = [RolloutBuffer() for _ in range(args.num_envs)]
-        last_update_stats = dict(_EMPTY_UPDATE_STATS)
-        completed_episode = start_episode - 1
-        apply_entropy_schedule(ppo, args, completed_updates)
-        next_evaluation = (
-            math.inf
-            if args.eval_every == 0
-            else (completed_episode // args.eval_every + 1) * args.eval_every
-        )
-
-        def maybe_update_ppo(episode_progress: int) -> None:
-            nonlocal last_update_stats
-            nonlocal completed_updates
-            if sum(len(buffer) for buffer in buffers) < args.rollout_steps:
-                return
-            update_started = time.monotonic()
-            apply_entropy_schedule(ppo, args, completed_updates)
-            last_update_stats = ppo.train_buffers(buffers)
-            completed_updates += 1
-            timings.ppo_wall_s += time.monotonic() - update_started
-            for name, stat in last_update_stats.items():
-                assert_finite(name, stat)
-
-        while completed_episode < args.episodes:
-            if time.monotonic() >= assignment_deadline:
-                wall_limit_reached = True
-                print(
-                    "Wall-time assignment limit reached before a new map "
-                    "batch; saving the current safe checkpoint.",
-                    flush=True,
-                )
-                break
-            block_start = completed_episode + 1
-            configured_block_start = (
-                (block_start - 1) // args.map_batch_episodes
-            ) * args.map_batch_episodes + 1
-            block_end = min(
-                configured_block_start + args.map_batch_episodes - 1,
-                args.episodes,
-            )
-            initial_count = min(args.num_envs, block_end - block_start + 1)
-            episode_numbers = list(range(block_start, block_start + initial_count))
-            world_indices = training_world_indices_for_round(
-                args,
-                len(reference_env.predefined_maps),
-                episode_numbers,
-            )
-            world_index = world_indices[0]
-            max_goal_distance = curriculum.current_max_distance()
-            seeds = [episode_seed(args.seed, 0, episode) for episode in episode_numbers]
-            reset_started = time.monotonic()
-            if len(set(world_indices)) == len(world_indices):
-                reset_results = group.reset_mixed_round(
-                    world_indices=world_indices,
-                    seeds=seeds,
-                    max_goal_distance=max_goal_distance,
-                )
-            else:
-                reset_results = group.reset_round(
-                    world_index=world_index,
-                    seeds=seeds,
-                    max_goal_distance=max_goal_distance,
-                )
-            timings.reset_wall_s += time.monotonic() - reset_started
-            active = {
-                index: _parallel_episode_state(
-                    *reset_results[index],
-                    episode=episode_numbers[index],
-                )
-                for index in range(initial_count)
-            }
-            for index, state in active.items():
-                state["robot_index"] = index
-                state["recurrent_state"] = network.initial_recurrent_state(1)
-                state["episode_start"] = True
-            next_episode = block_start + initial_count
-            finished: dict[int, dict[str, Any]] = {}
-            stop_assigning = False
-
-            while active:
-                if time.monotonic() >= hard_deadline:
-                    wall_limit_reached = True
-                    stop_assigning = True
-                    group.park_all()
-                    truncated = _truncate_active_for_wall_limit(active, buffers)
-                    for index, state in truncated.items():
-                        finished[int(state["episode"])] = state
-                    print(
-                        "Hard wall-time limit reached; active episodes were "
-                        "closed as bootstrapped truncations.",
-                        flush=True,
-                    )
-                    break
-                indices = sorted(active)
-                observations = np.stack(
-                    [active[index]["observation"] for index in indices]
-                )
-                recurrent_state = network.stack_recurrent_states([
-                    active[index]["recurrent_state"] for index in indices
-                ])
-                episode_starts = [
-                    active[index]["episode_start"] for index in indices
-                ]
-                actions, logprobs, values, next_recurrent_state = (
-                    network.get_actions_recurrent(
-                        observations,
-                        recurrent_state,
-                        episode_starts=episode_starts,
-                        deterministic=False,
-                    )
-                )
-                executed_action_values = actions.numpy().astype(np.float32)
-                physics_started = time.monotonic()
-                transitions_by_index = group.step_batch({
-                    index: executed_action_values[batch_index]
-                    for batch_index, index in enumerate(indices)
-                })
-                timings.physics_wall_s += time.monotonic() - physics_started
-                transitions = [transitions_by_index[index] for index in indices]
-                next_observations = np.stack(
-                    [transition[0] for transition in transitions]
-                )
-                next_values = network.get_value_recurrent(
-                    next_observations,
-                    next_recurrent_state,
-                ).numpy().reshape(-1)
-                ended_indices = []
-                for batch_index, environment_index in enumerate(indices):
-                    state = active[environment_index]
-                    episode_end = _record_shared_transition(
-                        state=state,
-                        transition=transitions[batch_index],
-                        action=executed_action_values[batch_index],
-                        logprob=logprobs[batch_index],
-                        value=values[batch_index],
-                        next_value=next_values[batch_index],
-                        buffer=buffers[environment_index],
-                        reward_scale=args.reward_scale,
-                        timings=timings,
-                        policy_sample=True,
-                        next_recurrent_state=network.recurrent_state_at(
-                            next_recurrent_state,
-                            batch_index,
-                        ),
-                    )
-                    if episode_end:
-                        episode = int(state["episode"])
-                        finished[episode] = state
-                        ended_indices.append(environment_index)
-                        del active[environment_index]
-                        if curriculum.record(
-                            bool(state["info"].get("reached_goal", False))
-                        ):
-                            ceiling = curriculum.current_max_distance()
-                            limit = (
-                                "unrestricted"
-                                if ceiling is None
-                                else f"<= {ceiling:.0f} m"
-                            )
-                            print(
-                                "curriculum: mastered level -> now "
-                                f"{limit} (episode {episode})",
-                                flush=True,
-                            )
-                        timing_values = timings.metric_values()
-                        world_name = reference_env.predefined_maps[
-                            int(state["info"]["world_index"])
-                        ].world_name
-                        print(
-                            f"episode={episode:5d}"
-                            f" | robot={environment_index}"
-                            f" | map={world_name}"
-                            f" | reward={state['reward']:8.2f}"
-                            f" | len={state['length']:3d}"
-                            f" | success={int(bool(state['info'].get('reached_goal', False)))}"
-                            f" | collision={int(bool(state['info'].get('collision', False)))}"
-                            f" | steps/s={timing_values['training_steps_per_second']:.2f}",
-                            flush=True,
-                        )
-                maybe_update_ppo(completed_episode + len(finished))
-                max_goal_distance = curriculum.current_max_distance()
-                if time.monotonic() >= assignment_deadline:
-                    stop_assigning = True
-                    wall_limit_reached = True
-
-                available = [
-                    index for index in range(args.num_envs) if index not in active
-                ]
-                while (
-                    available
-                    and next_episode <= block_end
-                    and not stop_assigning
-                ):
-                    slot_count = min(len(available), block_end - next_episode + 1)
-                    slots = available[:slot_count]
-                    slot_episodes = list(
-                        range(next_episode, next_episode + slot_count)
-                    )
-                    assignments = {
-                        index: episode_seed(args.seed, 0, episode)
-                        for index, episode in zip(slots, slot_episodes)
-                    }
-
-                    passive_indices = sorted(active)
-                    if passive_indices:
-                        passive_observations = np.stack(
-                            [active[index]["observation"] for index in passive_indices]
-                        )
-                        passive_actions = np.zeros(
-                            (len(passive_indices), reference_env.action_space.shape[0]),
-                            dtype=np.float32,
-                        )
-                        passive_recurrent_state = network.stack_recurrent_states([
-                            active[index]["recurrent_state"]
-                            for index in passive_indices
-                        ])
-                        (
-                            passive_logprobs,
-                            passive_values,
-                            passive_next_recurrent_state,
-                        ) = _evaluate_recorded_actions(
-                            network,
-                            passive_observations,
-                            passive_actions,
-                            passive_recurrent_state,
-                        )
-                    else:
-                        passive_actions = np.empty((0, 3), dtype=np.float32)
-                        passive_logprobs = passive_values = torch.empty((0, 1))
-
-                    reset_started = time.monotonic()
-                    try:
-                        recycled, passive = group.reset_slots(
-                            world_index=world_index,
-                            assignments=assignments,
-                            active_indices=passive_indices,
-                            max_goal_distance=max_goal_distance,
-                        )
-                    except RecyclePlacementUnavailable:
-                        # Inactive slots remain parked. Let active robots move
-                        # before retrying the same episode assignments.
-                        timings.reset_wall_s += time.monotonic() - reset_started
-                        break
-                    timings.reset_wall_s += time.monotonic() - reset_started
-                    if passive_indices:
-                        passive_next_observations = np.stack(
-                            [passive[index][0] for index in passive_indices]
-                        )
-                        passive_next_values = network.get_value_recurrent(
-                            passive_next_observations,
-                            passive_next_recurrent_state,
-                        ).numpy().reshape(-1)
-                        for batch_index, environment_index in enumerate(
-                            passive_indices
-                        ):
-                            state = active[environment_index]
-                            episode_end = _record_shared_transition(
-                                state=state,
-                                transition=passive[environment_index],
-                                action=passive_actions[batch_index],
-                                logprob=passive_logprobs[batch_index],
-                                value=passive_values[batch_index],
-                                next_value=passive_next_values[batch_index],
-                                buffer=buffers[environment_index],
-                                reward_scale=args.reward_scale,
-                                timings=timings,
-                                policy_sample=False,
-                                next_recurrent_state=(
-                                    network.recurrent_state_at(
-                                        passive_next_recurrent_state,
-                                        batch_index,
-                                    )
-                                ),
-                            )
-                            if episode_end:
-                                episode = int(state["episode"])
-                                finished[episode] = state
-                                del active[environment_index]
-
-                    for index, episode in zip(slots, slot_episodes):
-                        state = _parallel_episode_state(
-                            *recycled[index],
-                            episode=episode,
-                        )
-                        state["robot_index"] = index
-                        state["recurrent_state"] = (
-                            network.initial_recurrent_state(1)
-                        )
-                        state["episode_start"] = True
-                        active[index] = state
-                    next_episode += slot_count
-                    maybe_update_ppo(completed_episode + len(finished))
-                    if time.monotonic() >= assignment_deadline:
-                        stop_assigning = True
-                        wall_limit_reached = True
-                    available = [
-                        index
-                        for index in range(args.num_envs)
-                        if index not in active
-                    ]
-
-            assigned_last_episode = next_episode - 1
-            completed_episode = assigned_last_episode
-            empty_eval = _empty_eval_stats()
-            eval_stats = dict(empty_eval)
-            should_evaluate = (
-                not wall_limit_reached
-                and completed_episode >= next_evaluation
-                and time.monotonic() < assignment_deadline
-            )
-            if should_evaluate:
-                evaluation_started = time.monotonic()
-                eval_stats = evaluate_shared_policy(
-                    network,
-                    group,
-                    args,
-                    evaluation_round=completed_episode,
-                )
-                timings.evaluation_wall_s += (
-                    time.monotonic() - evaluation_started
-                )
-                while next_evaluation <= completed_episode:
-                    next_evaluation += args.eval_every
-                if evaluation_score(eval_stats) > evaluation_score(
-                    best_eval_metrics
-                ):
-                    best_eval_metrics = dict(eval_stats)
-                    checkpoint_started = time.monotonic()
-                    save_checkpoint(
-                        best_model_path,
-                        network,
-                        ppo,
-                        reference_env,
-                        args,
-                        completed_episode,
-                        best_eval_metrics,
-                        completed_updates,
-                    )
-                    timings.checkpoint_wall_s += (
-                        time.monotonic() - checkpoint_started
-                    )
-
-            timing_metrics = timings.metric_values()
-            for episode in sorted(finished):
-                state = finished[episode]
-                row_eval = (
-                    eval_stats if episode == assigned_last_episode else empty_eval
-                )
-                row = _shared_metric_row(
-                    episode,
-                    state,
-                    last_update_stats,
-                    row_eval,
-                    best_eval_metrics,
-                    timing_metrics,
-                )
-                write_metric(metrics_path, row)
-            checkpoint_started = time.monotonic()
-            save_checkpoint(
-                last_model_path,
-                network,
-                ppo,
-                reference_env,
-                args,
-                completed_episode,
-                best_eval_metrics,
-                completed_updates,
-            )
-            timings.checkpoint_wall_s += time.monotonic() - checkpoint_started
-            if wall_limit_reached or assigned_last_episode < block_end:
-                break
-
-        if sum(len(buffer) for buffer in buffers) > 0:
-            update_started = time.monotonic()
-            apply_entropy_schedule(ppo, args, completed_updates)
-            last_update_stats = ppo.train_buffers(buffers)
-            completed_updates += 1
-            timings.ppo_wall_s += time.monotonic() - update_started
-            for name, stat in last_update_stats.items():
-                assert_finite(name, stat)
-        checkpoint_started = time.monotonic()
-        save_checkpoint(
-            last_model_path,
-            network,
-            ppo,
-            reference_env,
-            args,
-            completed_episode,
-            best_eval_metrics,
-            completed_updates,
-        )
-        timings.checkpoint_wall_s += time.monotonic() - checkpoint_started
-        if not best_model_path.exists():
-            save_checkpoint(
-                best_model_path,
-                network,
-                ppo,
-                reference_env,
-                args,
-                completed_episode,
-                best_eval_metrics,
-                completed_updates,
-            )
-    finally:
-        group.close()
-
-    print("Shared Gazebo training finished.")
-    print(f"Metrics: {metrics_path}")
-    print(f"Last model: {last_model_path}")
-    print(f"Best model: {best_model_path}")
-    print(f"Final throughput: {timings.metric_values()}")
-    if wall_limit_reached:
-        print("Training stopped at the configured wall-time boundary.")
     _generate_training_report(metrics_path)
     return network, ppo
 
