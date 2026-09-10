@@ -29,6 +29,7 @@ from .evaluation_core import (
 from .martha_env import MarthaEnv
 from .network import ActorCritic
 from .reward import RewardConfig
+from .training_layout import WORLD_ORIGINS
 
 
 # Edit this block to configure standalone evaluation.  The checkpoint is the
@@ -157,6 +158,7 @@ def make_environment(
         action_limits=action_limits,
         reward_config=reward_config,
         allow_hardware_training=args.backend == "hardware",
+        world_origins=WORLD_ORIGINS,
     )
 
 

@@ -369,7 +369,11 @@ def create_combined_training_world(
             raise ValueError(f"{world_name}.world has no world element")
         offset_x, offset_y = WORLD_ORIGINS[world_name]
         for source_model in source_world.findall("model"):
-            if source_model.get("name") == "goal_point":
+            # goal_point is a per-run marker; ground_plane/sun are global and
+            # already provided once by the first world's includes. Copying a
+            # world-local ground_plane (tube ships a 100x100 one) would offset a
+            # second floor over every other arena.
+            if source_model.get("name") in ("goal_point", "ground_plane", "sun"):
                 continue
             model = copy.deepcopy(source_model)
             source_name = model.get("name")
