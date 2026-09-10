@@ -65,7 +65,7 @@ class NavigationFeatureExtractor(nn.Module):
             nn.ReLU(),
         )
         self.orientation_branch = nn.Sequential(
-            nn.Linear(2, 32),
+            nn.Linear(1, 32),
             nn.ReLU(),
         )
         self.distance_branch = nn.Sequential(
@@ -89,8 +89,8 @@ class NavigationFeatureExtractor(nn.Module):
             )
         laser = state[:, None, :LASER_SECTORS]
         distance = state[:, LASER_SECTORS:LASER_SECTORS + 1]
-        orientation = state[:, LASER_SECTORS + 1:LASER_SECTORS + 3]
-        velocity = state[:, LASER_SECTORS + 3:]
+        orientation = state[:, LASER_SECTORS + 1:LASER_SECTORS + 2]
+        velocity = state[:, LASER_SECTORS + 2:]
 
         features = torch.cat(
             (

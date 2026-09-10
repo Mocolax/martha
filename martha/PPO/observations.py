@@ -9,7 +9,12 @@ import numpy as np
 
 
 LASER_SECTORS = 36
-GOAL_FEATURE_SIZE = 3
+# The goal is two numbers: a normalized distance and the bearing angle. We feed
+# the raw (normalized) angle instead of its (sin, cos) pair on purpose: with an
+# omnidirectional base, sin/cos let a linear actor rotate the goal direction by
+# any angle just as easily as pointing at it, which made the policy settle into
+# orbiting the goal. A single angle removes that trivial rotation shortcut.
+GOAL_FEATURE_SIZE = 2
 VELOCITY_SIZE = 3
 OBSERVATION_FRAME_SIZE = LASER_SECTORS + GOAL_FEATURE_SIZE + VELOCITY_SIZE
 # The recurrent policy carries temporal context, so the observation is a
@@ -20,7 +25,7 @@ GOAL_DISTANCE_ENCODING = "rational_v1"
 # Goals span 2 m to 18 m in training.  A scale of 6 m keeps the widest usable
 # range across that span and roughly doubles the resolution beyond 12 m.
 DEFAULT_GOAL_DISTANCE_SCALE = 6.0
-GOAL_GUIDANCE_MODE = "direct_goal_v1"
+GOAL_GUIDANCE_MODE = "direct_goal_angle_v1"
 
 
 def normalize_angle(angle: float) -> float:
@@ -76,7 +81,13 @@ def goal_features(
     goal_y: float,
     goal_distance_scale: float,
 ) -> tuple[np.ndarray, float, float]:
-    """Encode goal distance without imposing or representing an upper bound."""
+    """Encode the goal as a normalized distance and a normalized bearing.
+
+    The distance uses the unbounded rational encoding; the bearing is the goal
+    angle in the robot frame divided by pi, so it lands in [-1, 1] like the
+    other inputs. Returning the raw ``bearing`` too lets callers reward
+    orientation without recomputing it.
+    """
     if not math.isfinite(goal_distance_scale) or goal_distance_scale <= 0.0:
         raise ValueError("goal_distance_scale must be positive and finite")
     dx = goal_x - robot_x
@@ -85,7 +96,7 @@ def goal_features(
     bearing = normalize_angle(math.atan2(dy, dx) - robot_yaw)
     normalized_distance = distance / (distance + goal_distance_scale)
     features = np.asarray(
-        [normalized_distance, math.sin(bearing), math.cos(bearing)],
+        [normalized_distance, bearing / math.pi],
         dtype=np.float32,
     )
     return features, distance, bearing

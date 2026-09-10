@@ -473,7 +473,7 @@ def test_navigation_encoder_consumes_one_frame_with_circular_laser_convs():
     assert second_convolution.stride == (2,)
     assert second_convolution.padding_mode == "circular"
     assert laser_linear.out_features == 256
-    assert extractor.orientation_branch[0].in_features == 2
+    assert extractor.orientation_branch[0].in_features == 1
     assert extractor.orientation_branch[0].out_features == 32
     assert extractor.distance_branch[0].in_features == 1
     assert extractor.distance_branch[0].out_features == 16

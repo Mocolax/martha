@@ -30,6 +30,10 @@ class RewardConfig:
     """Editable constants for the complete reward function."""
 
     # A small living cost makes finishing preferable to exhausting max_steps.
+    # NOTE (anti-circling): at 0.0002 this is almost free -- orbiting for the
+    # full 200-step stagnation window costs only ~0.04. If circling / stagnation
+    # persists after the goal-angle encoding, raise this to ~0.002-0.003 to put
+    # real time pressure on wandering. Bumping it needs a fresh run.
     step_penalty: float = 0.0002
     # Equation (4): distance progress.  The two scales are equal so the term
     # is potential-based: any approach/retreat cycle sums to zero and only net

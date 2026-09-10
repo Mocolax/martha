@@ -114,7 +114,7 @@ except Exception as exc:  # pragma: no cover - depends on the host environment.
     _NodeBase = object
 
 
-POLICY_CONTRACT_VERSION = 9
+POLICY_CONTRACT_VERSION = 10
 PPO_SCENARIO_ENTITY_PREFIX = "martha_ppo_s"
 PPO_GOAL_ENTITY_PREFIX = "martha_ppo_goal_"
 PPO_GOAL_ENTITY_NAME = "martha_ppo_goal_current"
