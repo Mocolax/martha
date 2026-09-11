@@ -22,6 +22,8 @@ REWARD_COMPONENTS = (
     ("reward_orientation", "Orientación"),
     ("reward_shortest_distance", "Récord de cercanía"),
     ("reward_laser", "Láser"),
+    ("reward_velocity", "Velocidad"),
+    ("reward_hold", "Permanencia"),
     ("reward_wiggle", "Zigzag"),
     ("reward_terminal", "Terminal"),
 )

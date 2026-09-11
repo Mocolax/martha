@@ -611,7 +611,7 @@ def test_paper_reward_metrics_and_legacy_component_reports_are_compatible(tmp_pa
 
 
 def test_reward_config_is_restored_from_checkpoint_and_legacy_uses_defaults():
-    config = RewardConfig(wiggle_window_steps=7, laser_clearance_distance=0.7)
+    config = RewardConfig(wiggle_window_steps=7)
     checkpoint = {"config": {"reward_config": vars(config)}}
 
     restored = train_module.reward_config_from_checkpoint(checkpoint)

@@ -115,6 +115,10 @@ except Exception as exc:  # pragma: no cover - depends on the host environment.
 
 
 POLICY_CONTRACT_VERSION = 10
+# The goal only counts as reached after the robot holds inside the tolerance
+# for this many consecutive control steps (3 s at 10 Hz), so it must learn to
+# arrive and stay still instead of just clipping the tolerance circle at speed.
+GOAL_HOLD_STEPS = 30
 PPO_SCENARIO_ENTITY_PREFIX = "martha_ppo_s"
 PPO_GOAL_ENTITY_PREFIX = "martha_ppo_goal_"
 PPO_GOAL_ENTITY_NAME = "martha_ppo_goal_current"
@@ -1493,6 +1497,8 @@ class MarthaEnv(_GymEnvBase):
         self._distance_field: np.ndarray | None = None
         self._episode_sample: EpisodeSample | None = None
         self._step_count = 0
+        self._dwell_steps = 0
+        self._was_within_tolerance = False
         self._previous_action = np.zeros(ACTION_SIZE, dtype=np.float32)
         self._observation_history = ObservationHistory()
         self._reward_state: RewardState | None = None
@@ -2368,6 +2374,8 @@ class MarthaEnv(_GymEnvBase):
     def _invalidate_episode_state(self) -> None:
         """Make ``step`` impossible until the next reset fully succeeds."""
         self._step_count = 0
+        self._dwell_steps = 0
+        self._was_within_tolerance = False
         self._previous_action = np.zeros(ACTION_SIZE, dtype=np.float32)
         self._observation_history.clear()
         self._reward_state = None
@@ -2574,7 +2582,17 @@ class MarthaEnv(_GymEnvBase):
             )
         motor_fault = snapshot.motor_fault
         collision = bool(contact_collision or motor_fault)
-        reached_goal = euclidean_distance <= self.goal_tolerance
+        # Reaching is a dwell, not a touch: stay inside the tolerance for
+        # GOAL_HOLD_STEPS in a row (leaving resets the count) so the policy has
+        # to arrive and hold still. max_steps keeps counting during the hold.
+        within_tolerance = euclidean_distance <= self.goal_tolerance
+        self._dwell_steps = self._dwell_steps + 1 if within_tolerance else 0
+        reached_goal = self._dwell_steps >= GOAL_HOLD_STEPS
+        # Flags for the optional hold shaping: inside the tolerance but not yet
+        # done (within_goal), or just stepped back out after being inside.
+        within_goal = within_tolerance and not reached_goal
+        left_goal = self._was_within_tolerance and not within_tolerance
+        self._was_within_tolerance = within_tolerance
         distance = self._distance_for_metrics(snapshot, euclidean_distance)
         if math.isfinite(distance):
             self._last_finite_distance = distance
@@ -2614,9 +2632,14 @@ class MarthaEnv(_GymEnvBase):
             goal_bearing=self._goal_bearing(snapshot),
             minimum_scan=snapshot.minimum_scan,
             angular_velocity=float(pending.command[2]),
+            linear_speed=math.hypot(
+                float(pending.command[0]),
+                float(pending.command[1]),
+            ),
+            within_goal=within_goal,
+            left_goal=left_goal,
             reached_goal=reached_goal,
             collision=collision,
-            out_of_bounds=False,
             timeout=truncated,
             stagnated=stagnated,
             config=self.reward_config,

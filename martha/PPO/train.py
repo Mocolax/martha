@@ -153,6 +153,8 @@ METRIC_FIELDS = [
     "reward_orientation",
     "reward_shortest_distance",
     "reward_laser",
+    "reward_velocity",
+    "reward_hold",
     "reward_wiggle",
     "reward_terminal",
     "episode_length",

@@ -208,6 +208,8 @@ def test_non_navigable_map_pose_freezes_distance_without_terminating():
     env._stagnation_reference_distance = 3.0
     env._last_finite_distance = 3.0
     env._stagnation_steps = 0
+    env._dwell_steps = 0
+    env._was_within_tolerance = False
     env.max_steps = 800
     env.goal_tolerance = 0.25
     env.reward_config = RewardConfig()
@@ -262,7 +264,7 @@ def test_non_navigable_map_pose_freezes_distance_without_terminating():
     assert truncated is False
     assert info["near_obstacle"] is True
     assert info["stagnated"] is False
-    assert reward != pytest.approx(-RewardConfig().out_of_bounds_penalty)
+    assert reward != pytest.approx(-RewardConfig().collision_penalty)
     assert math.isfinite(reward)
 
 
@@ -602,9 +604,11 @@ def _paper_reward(
     bearing: float = 0.0,
     minimum_scan: float = 8.0,
     angular_velocity: float = 0.0,
+    linear_speed: float = 0.0,
+    within_goal: bool = False,
+    left_goal: bool = False,
     reached_goal: bool = False,
     collision: bool = False,
-    out_of_bounds: bool = False,
     timeout: bool = False,
     stagnated: bool = False,
     config: RewardConfig = RewardConfig(),
@@ -615,9 +619,11 @@ def _paper_reward(
         goal_bearing=bearing,
         minimum_scan=minimum_scan,
         angular_velocity=angular_velocity,
+        linear_speed=linear_speed,
+        within_goal=within_goal,
+        left_goal=left_goal,
         reached_goal=reached_goal,
         collision=collision,
-        out_of_bounds=out_of_bounds,
         timeout=timeout,
         stagnated=stagnated,
         config=config,
@@ -721,19 +727,80 @@ def test_paper_shortest_distance_rewards_only_new_episode_records():
     assert state.best_distance == pytest.approx(3.5)
 
 
-def test_paper_laser_penalty_grows_quadratically_below_clearance():
+def test_paper_laser_penalty_is_a_dense_sigmoid_of_clearance():
     config = RewardConfig()
-    _, safe, _ = _paper_reward(RewardState.initial(5.0), 5.0, minimum_scan=0.65)
-    _, close, _ = _paper_reward(RewardState.initial(5.0), 5.0, minimum_scan=0.15)
-    _, mid, _ = _paper_reward(RewardState.initial(5.0), 5.0, minimum_scan=0.40)
 
-    assert safe["laser"] == 0.0
-    proximity = (config.laser_clearance_distance - 0.15) / config.laser_clearance_distance
-    assert close["laser"] == pytest.approx(
-        -config.laser_penalty_scale * proximity * proximity
+    def sigmoid_penalty(scan):
+        x = config.laser_penalty_steepness * (
+            config.laser_penalty_midpoint - scan
+        )
+        return -config.laser_penalty_scale / (1.0 + math.exp(-x))
+
+    _, far, _ = _paper_reward(RewardState.initial(5.0), 5.0, minimum_scan=2.0)
+    _, midpoint, _ = _paper_reward(
+        RewardState.initial(5.0),
+        5.0,
+        minimum_scan=config.laser_penalty_midpoint,
     )
-    # Passing close is cheap relative to nearly touching: the penalty is steep.
-    assert abs(mid["laser"]) < 0.30 * abs(close["laser"])
+    _, close, _ = _paper_reward(RewardState.initial(5.0), 5.0, minimum_scan=0.15)
+
+    # A far obstacle is almost free; the midpoint is exactly half strength.
+    assert far["laser"] == pytest.approx(sigmoid_penalty(2.0))
+    assert abs(far["laser"]) < 0.01 * config.laser_penalty_scale
+    assert midpoint["laser"] == pytest.approx(-config.laser_penalty_scale / 2.0)
+    assert close["laser"] == pytest.approx(sigmoid_penalty(0.15))
+    # Unlike a hard cutoff, the penalty stays graded, not zero, beyond contact.
+    assert abs(far["laser"]) < abs(midpoint["laser"]) < abs(close["laser"])
+
+
+def test_paper_velocity_penalty_brakes_only_near_the_goal():
+    config = RewardConfig()
+
+    def gate(dist):
+        x = config.velocity_penalty_steepness * (
+            config.velocity_slow_distance - dist
+        )
+        return 1.0 / (1.0 + math.exp(-x))
+
+    speed = 0.5
+    # Far from the goal the speed penalty is effectively off (fast is free).
+    _, far, _ = _paper_reward(RewardState.initial(5.0), 5.0, linear_speed=speed)
+    # Near the goal it bites, exactly speed^2 * gate * scale.
+    _, near_fast, _ = _paper_reward(
+        RewardState.initial(0.4), 0.4, linear_speed=speed
+    )
+    _, near_slow, _ = _paper_reward(
+        RewardState.initial(0.4), 0.4, linear_speed=0.1
+    )
+
+    assert abs(far["velocity"]) < 1e-3
+    expected = -config.velocity_penalty_scale * speed * speed * gate(0.4)
+    assert near_fast["velocity"] == pytest.approx(expected)
+    # speed^2: a slow creep costs far less than a fifth of the fast penalty.
+    assert abs(near_slow["velocity"]) < 0.1 * abs(near_fast["velocity"])
+
+
+def test_hold_shaping_is_inert_by_default_and_opt_in():
+    # Off by default: sitting inside or leaving the goal adds nothing.
+    _, inside_off, _ = _paper_reward(
+        RewardState.initial(0.1), 0.1, within_goal=True
+    )
+    _, left_off, _ = _paper_reward(
+        RewardState.initial(0.3), 0.3, left_goal=True
+    )
+    assert inside_off["hold"] == 0.0
+    assert left_off["hold"] == 0.0
+
+    # Opt in: a per-step bonus inside, a one-off penalty on leaving.
+    config = RewardConfig(goal_hold_bonus=0.3, goal_leave_penalty=1.0)
+    _, inside_on, _ = _paper_reward(
+        RewardState.initial(0.1), 0.1, within_goal=True, config=config
+    )
+    _, left_on, _ = _paper_reward(
+        RewardState.initial(0.3), 0.3, left_goal=True, config=config
+    )
+    assert inside_on["hold"] == pytest.approx(0.3)
+    assert left_on["hold"] == pytest.approx(-1.0)
 
 
 def test_paper_wiggle_penalty_uses_direct_reversals_in_a_ten_step_window():
