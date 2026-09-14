@@ -497,6 +497,57 @@ class WorldMap:
                     )
         return distances
 
+    def gradient_direction(
+        self,
+        distance_field: np.ndarray,
+        x: float,
+        y: float,
+    ) -> float | None:
+        """Return the world-frame bearing of steepest descent at ``(x, y)``.
+
+        The bearing points 'downhill' on a distance-to-goal field, i.e. along
+        the optimal route toward the goal, using central finite differences
+        (one-sided next to an occupied/inf cell). Returns ``None`` where the
+        field is undefined -- an occupied/inflated cell, or a flat spot such as
+        the goal itself -- so the caller can fall back to the straight bearing.
+        """
+        index = self.grid_index(x, y)
+        if index is None:
+            return None
+        row, column = index
+        here = float(distance_field[row, column])
+        if not math.isfinite(here):
+            return None
+        rows, columns = distance_field.shape
+
+        def _slope(lo_ok: bool, lo: float, hi_ok: bool, hi: float) -> float:
+            # Central difference when both neighbours are finite; otherwise a
+            # one-sided difference from the current cell; flat if neither.
+            if lo_ok and hi_ok:
+                return (hi - lo) / (2.0 * self.resolution)
+            if hi_ok:
+                return (hi - here) / self.resolution
+            if lo_ok:
+                return (here - lo) / self.resolution
+            return 0.0
+
+        def _cell(r: int, c: int) -> tuple[bool, float]:
+            if not (0 <= r < rows and 0 <= c < columns):
+                return False, 0.0
+            value = float(distance_field[r, c])
+            return math.isfinite(value), value
+
+        west_ok, west = _cell(row, column - 1)
+        east_ok, east = _cell(row, column + 1)
+        south_ok, south = _cell(row - 1, column)
+        north_ok, north = _cell(row + 1, column)
+        d_dx = _slope(west_ok, west, east_ok, east)
+        d_dy = _slope(south_ok, south, north_ok, north)
+        if d_dx == 0.0 and d_dy == 0.0:
+            return None
+        # Descent is the negative gradient: head toward smaller distances.
+        return math.atan2(-d_dy, -d_dx)
+
     def path_distance(
         self,
         x: float,

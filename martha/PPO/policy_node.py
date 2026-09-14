@@ -314,6 +314,10 @@ class PolicyNode(RosObservationNode):
         return response
 
     def _observation(self, snapshot: Any) -> tuple[np.ndarray, float]:
+        # TODO(deploy): v11 checkpoints are trained with the BFS-gradient steer
+        # direction (privileged: needs the map + a distance field here). This
+        # node still feeds the straight-line bearing, so real-robot inference of
+        # a v11 policy needs the wavefront gradient wired in first.
         goal, distance, _ = goal_features(
             snapshot.x,
             snapshot.y,

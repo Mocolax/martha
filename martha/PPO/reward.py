@@ -18,6 +18,7 @@ REWARD_COMPONENT_NAMES = (
     "step",
     "distance",
     "orientation",
+    "heading",
     "shortest_distance",
     "laser",
     "velocity",
@@ -31,24 +32,41 @@ REWARD_COMPONENT_NAMES = (
 class RewardConfig:
     """Editable constants for the complete reward function."""
 
-    # A small living cost makes finishing preferable to exhausting max_steps.
-    # NOTE (anti-circling): at 0.0002 this is almost free -- orbiting for the
-    # full 200-step stagnation window costs only ~0.04. If circling / stagnation
-    # persists after the goal-angle encoding, raise this to ~0.002-0.003 to put
-    # real time pressure on wandering. Bumping it needs a fresh run.
-    step_penalty: float = 0.0002
+    # A living cost makes finishing preferable to camping. Raised from 0.0002
+    # to 0.002: at 0.0002 freezing for a full 250-step episode cost only ~0.05,
+    # so with weak progress rewards the policy learned to sit still and take the
+    # mild stagnation penalty instead of risking a collision. At 0.002 a frozen
+    # episode bleeds ~0.5, putting real pressure on wandering/stalling.
+    step_penalty: float = 0.002
     # Equation (4): distance progress.  The two scales are equal so the term
     # is potential-based: any approach/retreat cycle sums to zero and only net
     # progress toward the goal pays.  An asymmetric retreat let the agent farm
-    # positive reward by oscillating in place until the timeout.
-    distance_positive_scale: float = 0.05
-    distance_negative_scale: float = 0.05
+    # positive reward by oscillating in place until the timeout.  Raised from
+    # 0.05 to 0.4: at 0.05 a full 12 m approach paid only ~0.6, far too little
+    # to justify navigating past obstacles (collision is -20), so the policy
+    # froze. At 0.4 the same approach pays ~4.7 -- worth the risk -- while the
+    # potential-based (symmetric) form keeps it un-farmable by oscillation.
+    distance_positive_scale: float = 0.4
+    distance_negative_scale: float = 0.4
     # Equation (7): orientation to the goal.  Looking away gets no penalty;
     # the retained field keeps recently saved paper-reward checkpoints loadable.
+    # Kept tiny on purpose: a strong orientation bonus previously beat the goal
+    # reward and drove circling, so progress is carried by the distance term.
     orientation_positive_scale: float = 0.0001
     orientation_negative_scale: float = 0.0
-    # Equation (8): a new best distance within the current episode.
-    shortest_distance_scale: float = 0.20
+    # Directional guidance: reward the commanded speed projected onto the BFS
+    # gradient bearing (the same compass the observation carries), i.e. how fast
+    # the robot is actually moving along the planned route. Unlike the facing-
+    # based orientation term this cannot be farmed by spinning (a pure rotation
+    # projects to zero translational speed), and unlike the potential distance
+    # term it stays informative inside the clearance band where the geodesic
+    # distance freezes -- exactly where the robot must thread past obstacles.
+    # At 0.05, a full episode moving 0.5 m/s straight down the route pays ~6.
+    heading_reward_scale: float = 0.05
+    # Equation (8): a new best distance within the current episode.  Raised to
+    # 1.0 for a strong monotonic pull toward the goal; it pays only on a new
+    # closest approach, so it cannot be farmed by oscillating in place.
+    shortest_distance_scale: float = 1.0
     # Dense clearance penalty: a sigmoid of the nearest-obstacle distance,
     # -laser_penalty_scale * sigmoid(steepness * (midpoint - minimum_scan)).
     # It is half strength at laser_penalty_midpoint and saturates near contact,
@@ -56,7 +74,10 @@ class RewardConfig:
     # corridor's two walls form a valley the policy can center in ("rails")
     # from the distance reward alone. This is the main obstacle signal, since
     # entering the band is no longer terminal; only a bumper contact ends it.
-    laser_penalty_scale: float = 0.06
+    # Lowered 0.06 -> 0.02: the clearance penalty was adding collision-aversion
+    # that discouraged moving through the arena; softening it lets the policy
+    # commit to the route and lean on the bumper-only collision signal instead.
+    laser_penalty_scale: float = 0.02
     laser_penalty_midpoint: float = 0.45
     laser_penalty_steepness: float = 6.0
     # Approach braking: penalize linear speed only near the goal, so the robot
@@ -65,7 +86,12 @@ class RewardConfig:
     # gated so it is ~0 beyond velocity_slow_distance (fast travel stays free)
     # and full inside it. speed**2 makes a slow creep almost free.
     velocity_penalty_scale: float = 0.08
-    velocity_slow_distance: float = 1.0
+    # Braking zone set just OUTSIDE the 0.5 m goal-reach radius: the robot must
+    # already be decelerating as it enters the reach zone so it can settle and
+    # hold the dwell instead of arriving at speed and overshooting. (Was 1.0 m,
+    # which damped the whole final metre; then 0.5 m, which only began braking
+    # exactly at the reach radius -- too late to be slow on arrival.)
+    velocity_slow_distance: float = 0.7
     velocity_penalty_steepness: float = 4.0
     # Optional "hold at the goal" shaping, OFF by default (both 0.0) so the goal
     # is learned purely from the terminal reward + the dwell. Set a small
@@ -121,6 +147,7 @@ def validate_reward_config(config: RewardConfig) -> None:
         config.distance_negative_scale,
         config.orientation_positive_scale,
         config.orientation_negative_scale,
+        config.heading_reward_scale,
         config.shortest_distance_scale,
         config.laser_penalty_scale,
         config.laser_penalty_midpoint,
@@ -229,6 +256,7 @@ def calculate_reward(
     minimum_scan: float,
     angular_velocity: float,
     linear_speed: float = 0.0,
+    goalward_speed: float = 0.0,
     within_goal: bool = False,
     left_goal: bool = False,
     reached_goal: bool,
@@ -287,6 +315,15 @@ def calculate_reward(
         if normalized_orientation >= 0.0
         else 0.0
     )
+
+    # Directional guidance: signed speed along the planned (BFS gradient) route.
+    # Positive when moving toward the goal, negative when moving away, so it is
+    # symmetric (cannot be farmed) yet gives immediate per-step credit to the
+    # action of heading down the route -- including inside the clearance band
+    # where the geodesic distance term freezes.
+    if not math.isfinite(goalward_speed):
+        goalward_speed = 0.0
+    components["heading"] = config.heading_reward_scale * goalward_speed
 
     best_distance = state.best_distance
     if distance < best_distance:

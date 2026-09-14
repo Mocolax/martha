@@ -25,7 +25,7 @@ GOAL_DISTANCE_ENCODING = "rational_v1"
 # Goals span 2 m to 18 m in training.  A scale of 6 m keeps the widest usable
 # range across that span and roughly doubles the resolution beyond 12 m.
 DEFAULT_GOAL_DISTANCE_SCALE = 6.0
-GOAL_GUIDANCE_MODE = "direct_goal_angle_v1"
+GOAL_GUIDANCE_MODE = "bfs_gradient_v1"
 
 
 def normalize_angle(angle: float) -> float:
@@ -80,20 +80,32 @@ def goal_features(
     goal_x: float,
     goal_y: float,
     goal_distance_scale: float,
+    guidance_bearing: float | None = None,
 ) -> tuple[np.ndarray, float, float]:
     """Encode the goal as a normalized distance and a normalized bearing.
 
-    The distance uses the unbounded rational encoding; the bearing is the goal
-    angle in the robot frame divided by pi, so it lands in [-1, 1] like the
-    other inputs. Returning the raw ``bearing`` too lets callers reward
-    orientation without recomputing it.
+    Distance is the straight-line (Euclidean) distance under the unbounded
+    rational encoding -- it never leaks obstacle layout. The bearing is the
+    direction to steer, in the robot frame, divided by pi so it lands in
+    [-1, 1]: the straight line to the goal by default, or ``guidance_bearing``
+    (an already robot-frame planner direction, e.g. the BFS gradient) when
+    given. That direction may point at an unmapped obstacle on purpose --
+    learning to override it from LiDAR is the policy's job. Returning the raw
+    ``bearing`` too lets callers reward orientation without recomputing it.
     """
     if not math.isfinite(goal_distance_scale) or goal_distance_scale <= 0.0:
         raise ValueError("goal_distance_scale must be positive and finite")
     dx = goal_x - robot_x
     dy = goal_y - robot_y
     distance = math.hypot(dx, dy)
-    bearing = normalize_angle(math.atan2(dy, dx) - robot_yaw)
+    if guidance_bearing is None:
+        bearing = normalize_angle(math.atan2(dy, dx) - robot_yaw)
+    else:
+        # Already rotated into the robot frame by the caller (which knows the
+        # world-frame planner direction and the robot's world yaw). Using it
+        # verbatim avoids mixing a world-frame bearing with an episode-local
+        # odom yaw, which silently corrupted the compass.
+        bearing = normalize_angle(guidance_bearing)
     normalized_distance = distance / (distance + goal_distance_scale)
     features = np.asarray(
         [normalized_distance, bearing / math.pi],

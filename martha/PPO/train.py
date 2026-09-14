@@ -75,10 +75,17 @@ class TrainingDefaults:
     # No curriculum: every episode samples a goal at a fully random geodesic
     # distance (>= min_goal_distance, up to whatever the arena allows).
     max_wall_time_hours: float = 24.0
+    # Seed small obstacles on the planned path each episode (Gazebo-only, unseen
+    # by the map/planner) so the policy always has something to dodge by LiDAR.
+    seed_path_obstacles: bool = True
     rollout_steps: int = 1024
     ppo_epochs: int = 8
     minibatch_size: int = 256
     recurrent_sequence_length: int = 64
+    # Raised 2e-5 -> 1e-4: at 2e-5 the updates were tiny (approx_kl ~0.001-0.007,
+    # far under the 0.03 trust region), so the policy learned very slowly. Since
+    # advantages are whitened, reward magnitude cannot drive faster updates --
+    # only the lr can. target_kl still caps any overshoot.
     lr: float = 1e-4
     # Linear learning-rate decay to lr_final_fraction over the same
     # update clock as the entropy schedule, so late updates settle
@@ -102,8 +109,14 @@ class TrainingDefaults:
     # episode clock runs fastest exactly when the agent is doing worst and
     # needs exploration most.  One update covers rollout_steps environment
     # steps, so this clock tracks the experience actually collected.
-    entropy_exploration_updates: int = 200
-    entropy_decay_updates: int = 1000
+    # Slowed the shared exploration clock (was 200 / 1000): success peaked
+    # ~38% then regressed as the entropy coef AND the hard STD ceiling faded,
+    # so exploration died before the policy consolidated across the random
+    # goals. Holding the SAME starting exploration for longer and fading it
+    # half as fast lets it settle without forcing entropy up (bases/floors
+    # unchanged).
+    entropy_exploration_updates: int = 500
+    entropy_decay_updates: int = 2000
     # Exploration is annealed towards a floor instead of exactly zero, so the
     # learned STD cannot collapse into a deterministic policy that has no way
     # back out of whatever behaviour it settled on.
@@ -124,7 +137,12 @@ class TrainingDefaults:
     map_index: int | None = None
     goal: tuple[float, float] | None = None
     goal_frame: str = "odom"
-    goal_tolerance: float = 0.25
+    # Center-to-center reach radius. Raised 0.25 -> 0.5: with the 0.29 m front
+    # footprint and the 0.20 m goal marker, the robot visually touches the goal
+    # at ~0.5 m center distance, so at 0.25 it looked like a touch but scored
+    # nothing. 0.5 makes "footprint reaches the marker" = success and makes the
+    # 30-step dwell attainable instead of an impossible balance in a tiny circle.
+    goal_tolerance: float = 0.5
     min_goal_distance: float = 2.0
     goal_distance_scale: float = DEFAULT_GOAL_DISTANCE_SCALE
     scan_range_max: float = 8.0
@@ -151,6 +169,7 @@ METRIC_FIELDS = [
     "reward_step",
     "reward_distance",
     "reward_orientation",
+    "reward_heading",
     "reward_shortest_distance",
     "reward_laser",
     "reward_velocity",
@@ -626,6 +645,11 @@ def environment_kwargs(
     # map's free-space definition to the same offset, so the goals we sample
     # and teleport to line up with the geometry Gazebo actually renders.
     world_origins = None if args.backend == "hardware" else WORLD_ORIGINS
+    # The combined world already contains all six arenas at their offsets, so
+    # the env must treat them as preloaded: it teleports within that world and
+    # never resets/reswaps per-map geometry (which would land the robot outside
+    # the arena and stamp a stray map at the layout center).
+    preloaded = args.backend == "gazebo"
     return {
         "action_mode": "continuous",
         "render_mode": None,
@@ -633,6 +657,7 @@ def environment_kwargs(
         "map_index": args.map_index,
         "backend": args.backend,
         "world_origins": world_origins,
+        "preloaded_worlds": preloaded,
         "scan_range_max": _runtime_value(
             resume_checkpoint,
             "scan_range_max",
@@ -649,6 +674,9 @@ def environment_kwargs(
         "action_limits": action_limits,
         "reward_config": reward_config,
         "allow_hardware_training": args.backend == "hardware",
+        "seed_path_obstacles": (
+            args.seed_path_obstacles and args.backend == "gazebo"
+        ),
     }
 
 

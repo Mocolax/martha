@@ -202,7 +202,10 @@ def test_non_navigable_map_pose_freezes_distance_without_terminating():
     env._step_count = 0
     env._previous_action = np.zeros(3, dtype=np.float32)
     env._active_world_index = 0
-    env._world_map = SimpleNamespace(is_free_pose=lambda x, y: False)
+    env._world_map = SimpleNamespace(
+        is_free_pose=lambda x, y: False,
+        gradient_direction=lambda field, x, y: None,
+    )
     env._distance_field = np.zeros((1, 1), dtype=np.float64)
     env._reward_state = RewardState.initial(3.0)
     env._stagnation_reference_distance = 3.0
@@ -570,6 +573,52 @@ def test_rational_goal_distance_has_no_finite_maximum_or_clipping():
     assert 0.0 < near[0] < far[0] < 1.0
 
 
+def test_goal_features_follows_the_guidance_bearing_when_given():
+    # Goal straight ahead: the straight-line bearing is 0.
+    straight, dist_s, b_straight = goal_features(0.0, 0.0, 0.0, 5.0, 0.0, 6.0)
+    # The planner direction is already robot-frame, so goal_features uses it
+    # verbatim and it overrides the straight-line bearing.
+    guided, dist_g, b_guided = goal_features(
+        0.0, 0.0, 0.0, 5.0, 0.0, 6.0, guidance_bearing=math.pi / 2.0
+    )
+
+    assert b_straight == pytest.approx(0.0)
+    assert b_guided == pytest.approx(math.pi / 2.0)
+    assert guided[1] == pytest.approx(0.5)  # (pi/2) / pi
+    # The Euclidean distance channel is unaffected by the guidance direction.
+    assert dist_s == pytest.approx(dist_g)
+    assert straight[0] == pytest.approx(guided[0])
+    # A robot-frame guidance is used as-is, independent of the robot's yaw
+    # (the caller already rotated it into the robot frame). A nonzero yaw must
+    # not be subtracted again.
+    _, _, b_yawed = goal_features(
+        0.0, 0.0, 1.0, 5.0, 0.0, 6.0, guidance_bearing=math.pi / 2.0
+    )
+    assert b_yawed == pytest.approx(math.pi / 2.0)
+
+
+def test_bfs_gradient_points_downhill_toward_the_goal():
+    world = WorldMap.from_sdf(WORLDS_DIRECTORY / "room.world")
+    sample = world.sample_episode(np.random.default_rng(0), min_goal_distance=3.0)
+    field = world.distance_field(sample.goal_x, sample.goal_y)
+
+    bearing = world.gradient_direction(field, sample.start_x, sample.start_y)
+    assert bearing is not None
+
+    start_index = world.grid_index(sample.start_x, sample.start_y)
+    distance_here = field[start_index]
+    step = world.resolution * 2.0
+    ahead = world.grid_index(
+        sample.start_x + step * math.cos(bearing),
+        sample.start_y + step * math.sin(bearing),
+    )
+    # Following the gradient reduces the distance-to-goal (descent).
+    assert ahead is not None
+    assert field[ahead] < distance_here
+    # At the goal cell the field is flat, so there is no direction.
+    assert world.gradient_direction(field, sample.goal_x, sample.goal_y) is None
+
+
 def test_observation_history_returns_the_newest_frame_only():
     history = ObservationHistory()
     frames = [
@@ -605,6 +654,7 @@ def _paper_reward(
     minimum_scan: float = 8.0,
     angular_velocity: float = 0.0,
     linear_speed: float = 0.0,
+    goalward_speed: float = 0.0,
     within_goal: bool = False,
     left_goal: bool = False,
     reached_goal: bool = False,
@@ -620,6 +670,7 @@ def _paper_reward(
         minimum_scan=minimum_scan,
         angular_velocity=angular_velocity,
         linear_speed=linear_speed,
+        goalward_speed=goalward_speed,
         within_goal=within_goal,
         left_goal=left_goal,
         reached_goal=reached_goal,
@@ -697,6 +748,20 @@ def test_paper_orientation_rewards_front_without_penalizing_back():
         config.orientation_positive_scale
     )
     assert back["orientation"] == 0.0
+
+
+def test_heading_reward_credits_signed_speed_along_the_route():
+    config = RewardConfig()
+    _, toward, _ = _paper_reward(RewardState.initial(5.0), 5.0, goalward_speed=0.4)
+    _, away, _ = _paper_reward(RewardState.initial(5.0), 5.0, goalward_speed=-0.4)
+    _, spinning, _ = _paper_reward(RewardState.initial(5.0), 5.0, goalward_speed=0.0)
+
+    # Moving down the route pays, moving away costs the same magnitude
+    # (symmetric -> un-farmable), and a pure rotation (zero goalward speed) is
+    # neutral so spinning in place cannot harvest the term.
+    assert toward["heading"] == pytest.approx(config.heading_reward_scale * 0.4)
+    assert away["heading"] == pytest.approx(-config.heading_reward_scale * 0.4)
+    assert spinning["heading"] == 0.0
 
 
 def test_paper_nonterminal_transition_has_small_step_cost():

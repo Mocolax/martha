@@ -42,6 +42,7 @@ from .observations import (
     ObservationHistory,
     build_observation_frame,
     goal_features,
+    normalize_angle,
     reduce_laser_scan,
 )
 from .reward import (
@@ -114,7 +115,7 @@ except Exception as exc:  # pragma: no cover - depends on the host environment.
     _NodeBase = object
 
 
-POLICY_CONTRACT_VERSION = 10
+POLICY_CONTRACT_VERSION = 11
 # The goal only counts as reached after the robot holds inside the tolerance
 # for this many consecutive control steps (3 s at 10 Hz), so it must learn to
 # arrive and stay still instead of just clipping the tolerance circle at speed.
@@ -1282,6 +1283,38 @@ GOAL_MODEL_SDF = """<?xml version="1.0"?>
   </model>
 </sdf>"""
 
+PATH_OBSTACLE_ENTITY_PREFIX = "martha_ppo_path_obstacle_"
+PATH_OBSTACLE_COUNT = 2
+PATH_OBSTACLE_RADIUS_RANGE = (0.1, 0.4)
+PATH_OBSTACLE_HEIGHT = 0.6
+# Lateral room a small obstacle must leave for the robot to pass around it:
+# roughly half the footprint plus a buffer.
+PATH_OBSTACLE_PASS_CLEARANCE = 0.35
+
+
+def _path_obstacle_sdf(name: str, radius: float) -> str:
+    """SDF for a static red cylinder the LiDAR and bumper both perceive."""
+    return f"""<?xml version="1.0"?>
+<sdf version="1.6">
+  <model name="{name}">
+    <static>true</static>
+    <link name="link">
+      <collision name="collision">
+        <geometry><cylinder><radius>{radius:.4f}</radius>
+          <length>{PATH_OBSTACLE_HEIGHT:.4f}</length></cylinder></geometry>
+      </collision>
+      <visual name="visual">
+        <geometry><cylinder><radius>{radius:.4f}</radius>
+          <length>{PATH_OBSTACLE_HEIGHT:.4f}</length></cylinder></geometry>
+        <material>
+          <ambient>0.8 0.2 0.2 1</ambient>
+          <diffuse>0.8 0.2 0.2 1</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>"""
+
 
 class MarthaEnv(_GymEnvBase):
     """Synchronous Gymnasium wrapper over Martha's common ROS interface."""
@@ -1299,6 +1332,7 @@ class MarthaEnv(_GymEnvBase):
         worlds_directory: str | Path | None = None,
         world_origins: dict[str, tuple[float, float]] | None = None,
         preloaded_worlds: bool = False,
+        seed_path_obstacles: bool = False,
         scan_topic: str = "/scan",
         odometry_topic: str = "/odometry/filtered",
         goal_topic: str = "/goal_pose",
@@ -1393,6 +1427,7 @@ class MarthaEnv(_GymEnvBase):
         self.map_index = map_index
         self.backend = backend
         self.preloaded_worlds = bool(preloaded_worlds)
+        self.seed_path_obstacles = bool(seed_path_obstacles)
         self.robot_name = robot_name
         self.robot_z = float(robot_z)
         self.reset_settle_samples = reset_settle_samples
@@ -1493,6 +1528,7 @@ class MarthaEnv(_GymEnvBase):
         self._active_world_index: int | None = None
         self._scenario_entity_names: set[str] = set()
         self._goal_marker_name: str | None = None
+        self._path_obstacle_names: list[str] = []
         self._world_map: WorldMap | None = None
         self._distance_field: np.ndarray | None = None
         self._episode_sample: EpisodeSample | None = None
@@ -1633,6 +1669,7 @@ class MarthaEnv(_GymEnvBase):
             for name in self.ros.gazebo_model_names()
             if name.startswith(PPO_SCENARIO_ENTITY_PREFIX)
             or name.startswith(PPO_GOAL_ENTITY_PREFIX)
+            or name.startswith(PATH_OBSTACLE_ENTITY_PREFIX)
         )
         names_to_delete.add("goal_point")
         if self._goal_marker_name is not None:
@@ -1700,6 +1737,97 @@ class MarthaEnv(_GymEnvBase):
         marker_name = f"{PPO_GOAL_ENTITY_PREFIX}{self.robot_name}"
         self._spawn_entity(marker_name, GOAL_MODEL_SDF, pose)
         self._goal_marker_name = marker_name
+
+    def _trace_gradient_path(
+        self,
+        world_map: WorldMap,
+        distance_field: np.ndarray,
+        sample: EpisodeSample,
+    ) -> list[tuple[float, float]]:
+        """Walk the clean-map gradient from start to goal, returning a polyline.
+
+        This is the general route the planner (and therefore the policy's steer
+        direction) would follow with no seeded obstacles present.
+        """
+        step = world_map.resolution
+        x, y = sample.start_x, sample.start_y
+        path = [(x, y)]
+        for _ in range(1000):
+            if math.hypot(sample.goal_x - x, sample.goal_y - y) <= step:
+                break
+            bearing = world_map.gradient_direction(distance_field, x, y)
+            if bearing is None:
+                break
+            x += step * math.cos(bearing)
+            y += step * math.sin(bearing)
+            path.append((x, y))
+        return path
+
+    def _can_pass_beside(
+        self,
+        world_map: WorldMap,
+        x: float,
+        y: float,
+        heading: float,
+        radius: float,
+    ) -> bool:
+        """Whether a free cell exists to a side, so the robot can go around."""
+        offset = radius + PATH_OBSTACLE_PASS_CLEARANCE
+        for sign in (1.0, -1.0):
+            side = heading + sign * math.pi / 2.0
+            if world_map.is_free_pose(
+                x + offset * math.cos(side),
+                y + offset * math.sin(side),
+            ):
+                return True
+        return False
+
+    def _spawn_path_obstacles(
+        self,
+        world_map: WorldMap,
+        distance_field: np.ndarray,
+        sample: EpisodeSample,
+    ) -> None:
+        """Seed small cylinders on the planned path so PPO must dodge them.
+
+        Training only, and Gazebo-only on purpose: the obstacles are physical
+        (LiDAR and the bumper see them) but never enter the map, so the planner
+        gradient still points 'through' them and the policy must learn to steer
+        around them from LiDAR.
+        """
+        if not self.seed_path_obstacles:
+            return
+        path = self._trace_gradient_path(world_map, distance_field, sample)
+        if len(path) < 5:
+            return
+        low, high = PATH_OBSTACLE_RADIUS_RANGE
+        for slot in range(PATH_OBSTACLE_COUNT):
+            for _ in range(6):  # a few tries to find a passable placement
+                fraction = float(self.np_random.uniform(0.25, 0.75))
+                index = min(int(fraction * (len(path) - 1)), len(path) - 2)
+                x, y = path[index]
+                ahead = path[index + 1]
+                heading = math.atan2(ahead[1] - y, ahead[0] - x)
+                radius = float(self.np_random.uniform(low, high))
+                if not self._can_pass_beside(
+                    world_map, x, y, heading, radius
+                ):
+                    continue
+                name = f"{PATH_OBSTACLE_ENTITY_PREFIX}{self.robot_name}_{slot}"
+                pose = Pose()
+                pose.position.x = float(x)
+                pose.position.y = float(y)
+                pose.position.z = PATH_OBSTACLE_HEIGHT / 2.0
+                pose.orientation.w = 1.0
+                self._spawn_entity(name, _path_obstacle_sdf(name, radius), pose)
+                self._path_obstacle_names.append(name)
+                break
+
+    def _delete_path_obstacles(self) -> None:
+        """Remove the previous episode's seeded obstacles from Gazebo."""
+        for name in self._path_obstacle_names:
+            self._delete_entity(name, ignore_failure=True)
+        self._path_obstacle_names = []
 
     def _set_robot_state(self, x: float, y: float, yaw: float) -> None:
         request = SetEntityState.Request()
@@ -1814,9 +1942,13 @@ class MarthaEnv(_GymEnvBase):
         )
 
     def _build_observation(self, snapshot: SensorSnapshot) -> tuple[np.ndarray, float]:
-        # The policy consumes the goal directly: normalized distance plus the
-        # sine and cosine of its bearing.  No global planner is involved -- the
-        # recurrent policy must learn to route around dead ends on its own.
+        # The policy sees a straight-line distance plus a steer direction. That
+        # direction is the BFS gradient of the (static-map) distance field --
+        # the general planned route -- when a field is available; the field
+        # never includes the seeded obstacles, so the gradient may point at one
+        # and the policy must learn to override it from LiDAR. It falls back to
+        # the straight bearing when the gradient is undefined (e.g. hardware).
+        guidance_bearing = self._observation_guidance_bearing(snapshot)
         goal, euclidean_distance, _ = goal_features(
             snapshot.x,
             snapshot.y,
@@ -1824,6 +1956,7 @@ class MarthaEnv(_GymEnvBase):
             snapshot.goal_x,
             snapshot.goal_y,
             self.goal_distance_scale,
+            guidance_bearing=guidance_bearing,
         )
         frame = build_observation_frame(
             snapshot.laser_sectors,
@@ -1842,6 +1975,41 @@ class MarthaEnv(_GymEnvBase):
                 f"got {observation.shape}"
             )
         return observation, euclidean_distance
+
+    def _observation_guidance_bearing(
+        self,
+        snapshot: SensorSnapshot,
+    ) -> float | None:
+        """Robot-frame BFS steer direction toward the goal.
+
+        The static-map distance field (the same one the reward reads) is indexed
+        in the WORLD frame, so the gradient must be sampled at the robot's world
+        pose -- ``ground_truth`` here, which stands in for a real robot's
+        map-frame localization. Sampling it at ``snapshot.x/y`` (the EKF pose,
+        which is zeroed to an episode-local odom frame at reset) would fall
+        outside the arena's world-frame field every step, silently degrading the
+        privileged compass to the straight-line fallback.
+
+        Returns the steer direction already rotated into the robot frame (so
+        ``goal_features`` uses it verbatim), or None when no field is available,
+        the gradient is undefined, or the world pose is missing.
+        """
+        if (
+            self._world_map is None
+            or self._distance_field is None
+            or snapshot.ground_truth_x is None
+            or snapshot.ground_truth_y is None
+            or snapshot.ground_truth_yaw is None
+        ):
+            return None
+        world_bearing = self._world_map.gradient_direction(
+            self._distance_field,
+            snapshot.ground_truth_x,
+            snapshot.ground_truth_y,
+        )
+        if world_bearing is None:
+            return None
+        return normalize_angle(world_bearing - snapshot.ground_truth_yaw)
 
     def _goal_bearing(self, snapshot: SensorSnapshot) -> float:
         """Return the policy-frame angle from Martha's front to the goal."""
@@ -2133,6 +2301,7 @@ class MarthaEnv(_GymEnvBase):
         if self.preloaded_worlds and self._goal_marker_name is not None:
             self._delete_entity(self._goal_marker_name, ignore_failure=True)
             self._goal_marker_name = None
+        self._delete_path_obstacles()
 
         # Reset dynamics before every placement attempt.  The selected
         # scenario must be restored after reset_world because Gazebo otherwise
@@ -2315,6 +2484,9 @@ class MarthaEnv(_GymEnvBase):
             self._world_map = world_map
             self._distance_field = distance_field
             self._episode_sample = settled_sample
+            self._spawn_path_obstacles(
+                world_map, distance_field, settled_sample
+            )
             # A post-placement bumper message has now been observed.  Clear
             # it so only messages emitted after the next action can terminate.
             self.ros.clear_contacts()
@@ -2626,6 +2798,23 @@ class MarthaEnv(_GymEnvBase):
         truncated = bool(not terminated and self._step_count >= self.max_steps)
         if self._reward_state is None:
             raise RuntimeError("reward state was not initialized by reset")
+        # Signed speed along the planned route: project the commanded body-frame
+        # velocity onto the robot-frame BFS gradient bearing (the same compass
+        # the observation carries), falling back to the robot-frame straight
+        # line when the field is undefined. The heading reward then credits
+        # exactly the direction the policy is told to follow.
+        guidance_relative = self._observation_guidance_bearing(snapshot)
+        if guidance_relative is None:
+            guidance_relative = normalize_angle(
+                math.atan2(
+                    snapshot.goal_y - snapshot.y,
+                    snapshot.goal_x - snapshot.x,
+                )
+                - snapshot.yaw
+            )
+        goalward_speed = float(pending.command[0]) * math.cos(
+            guidance_relative
+        ) + float(pending.command[1]) * math.sin(guidance_relative)
         reward, components, self._reward_state = calculate_reward(
             state=self._reward_state,
             distance=distance,
@@ -2636,6 +2825,7 @@ class MarthaEnv(_GymEnvBase):
                 float(pending.command[0]),
                 float(pending.command[1]),
             ),
+            goalward_speed=goalward_speed,
             within_goal=within_goal,
             left_goal=left_goal,
             reached_goal=reached_goal,

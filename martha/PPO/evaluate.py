@@ -159,6 +159,7 @@ def make_environment(
         reward_config=reward_config,
         allow_hardware_training=args.backend == "hardware",
         world_origins=WORLD_ORIGINS,
+        preloaded_worlds=args.backend == "gazebo",
     )
 
 
