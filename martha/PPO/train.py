@@ -41,7 +41,7 @@ from .logic import PPOLogic
 from .martha_env import MarthaEnv
 from .network import ActorCritic
 from .observations import DEFAULT_GOAL_DISTANCE_SCALE
-from .reward import REWARD_COMPONENT_NAMES, RewardConfig
+from .reward import REWARD_COMPONENT_NAMES, RewardConfig, RewardNormalizer
 from .training_layout import (
     WORLD_ORIGINS,
     create_combined_training_world,
@@ -72,11 +72,13 @@ class TrainingDefaults:
     # world. She stays on one arena for this many episodes before moving on, so
     # every map gets a fair, reproducible share of experience.
     episodes_per_map: int = 4
-    # No curriculum: every episode samples a goal at a fully random geodesic
-    # distance (>= min_goal_distance, up to whatever the arena allows).
+    # No curriculum: the goal band is fixed for the whole run, so the task
+    # distribution never moves under the policy. See max_goal_distance.
     max_wall_time_hours: float = 24.0
-    # Seed small obstacles on the planned path each episode (Gazebo-only, unseen
-    # by the map/planner) so the policy always has something to dodge by LiDAR.
+    # Back on now that the open arena is solved (68% success, stagnation down
+    # to 2%): the policy can route, so the remaining failure mode is dodging.
+    # Seeds small obstacles on the planned path each episode, unseen by the
+    # map and the BFS compass, so they can only be avoided from LiDAR.
     seed_path_obstacles: bool = True
     rollout_steps: int = 1024
     ppo_epochs: int = 8
@@ -144,6 +146,12 @@ class TrainingDefaults:
     # 30-step dwell attainable instead of an impossible balance in a tiny circle.
     goal_tolerance: float = 0.5
     min_goal_distance: float = 2.0
+    # No ceiling: the arena itself defines how hard the task is. That only
+    # became true once every world was clipped to its own perimeter walls --
+    # before that, lab.world reported 310 m2 of free space for a 71 m2
+    # laboratory, so goals were sampled in the void outside the arena and an
+    # artificial distance cap was the only thing holding the task down.
+    max_goal_distance: float | None = None
     goal_distance_scale: float = DEFAULT_GOAL_DISTANCE_SCALE
     scan_range_max: float = 8.0
     max_vx: float = 0.5
@@ -342,6 +350,12 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError(
             "learning, navigation and sensor limits must be positive"
         )
+    if args.max_goal_distance is not None:
+        ceiling = float(args.max_goal_distance)
+        if not math.isfinite(ceiling) or ceiling < args.min_goal_distance:
+            raise ValueError(
+                "max_goal_distance must be finite and at least min_goal_distance"
+            )
     if args.value_coef < 0.0 or args.entropy_coef < 0.0:
         raise ValueError(
             "value_coef and entropy_coef cannot be negative"
@@ -790,6 +804,7 @@ def save_checkpoint(
     episode: int,
     best_eval_metrics: dict[str, float],
     updates: int = 0,
+    reward_normalizer: RewardNormalizer | None = None,
 ) -> None:
     """Save policy, optimizer and the complete runtime contract."""
     checkpoint = {
@@ -805,6 +820,11 @@ def save_checkpoint(
             best_eval_metrics["eval_mean_reward"]
         ),
         "policy_contract": dict(env.policy_contract),
+        # Without this a resume restarts the reward scale from scratch, which
+        # moves every critic target for the first few hundred steps.
+        "reward_normalizer": (
+            None if reward_normalizer is None else reward_normalizer.state_dict()
+        ),
         "config": _serializable_config(args, env),
         "rng_state": {
             "python": random.getstate(),
@@ -953,7 +973,14 @@ def _reset_options(
             "goal": tuple(args.goal),
             "goal_frame": args.goal_frame,
         }
-    return {} if world_index is None else {"world_index": world_index}
+    options: dict[str, Any] = {}
+    if world_index is not None:
+        options["world_index"] = world_index
+    # Training and the in-training evaluation both come through here, so the
+    # policy is scored on exactly the goal band it is trained on.
+    if args.max_goal_distance is not None:
+        options["max_goal_distance"] = float(args.max_goal_distance)
+    return options
 
 
 def training_world_index(
@@ -1282,6 +1309,19 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
         _shutdown_gazebo()
         raise
     buffer = RolloutBuffer()
+    # Scaled with the same discount the critic uses, so the running statistic
+    # matches the returns it is meant to keep in range.
+    reward_normalizer = RewardNormalizer(gamma=args.gamma)
+    if resume_checkpoint is not None:
+        saved_normalizer = resume_checkpoint.get("reward_normalizer")
+        if isinstance(saved_normalizer, dict):
+            reward_normalizer.load_state_dict(saved_normalizer)
+        else:
+            print(
+                "WARNING: resumed checkpoint predates reward normalization; "
+                "the reward scale restarts from scratch.",
+                flush=True,
+            )
     start_episode = 1
     completed_updates = 0
     best_eval_metrics = dict(_EMPTY_BEST_EVAL)
@@ -1401,7 +1441,10 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                     state=observation,
                     action=action_array,
                     logprob=logprob,
-                    reward=scale_reward_for_ppo(reward, args.reward_scale),
+                    reward=reward_normalizer.normalize(
+                        scale_reward_for_ppo(reward, args.reward_scale),
+                        episode_end,
+                    ),
                     value=value,
                     next_value=next_value,
                     terminated=terminated,
@@ -1470,6 +1513,7 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                         episode,
                         best_eval_metrics,
                         completed_updates,
+                        reward_normalizer,
                     )
 
             save_checkpoint(
@@ -1481,6 +1525,7 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                 episode,
                 best_eval_metrics,
                 completed_updates,
+                reward_normalizer,
             )
             write_metric(
                 metrics_path,
@@ -1553,6 +1598,7 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
             completed_episode,
             best_eval_metrics,
             completed_updates,
+            reward_normalizer,
         )
         if not best_model_path.exists():
             save_checkpoint(
@@ -1564,6 +1610,7 @@ def train(args: argparse.Namespace) -> tuple[ActorCritic, PPOLogic]:
                 completed_episode,
                 best_eval_metrics,
                 completed_updates,
+                reward_normalizer,
             )
     finally:
         env.close()

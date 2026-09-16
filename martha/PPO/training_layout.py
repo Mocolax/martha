@@ -21,8 +21,8 @@ from .world_map import EpisodeSample, TRAINING_WORLD_NAMES, WorldMap
 WORLD_ORIGINS = {
     "four_rooms": (-30.0, 15.0),
     "hall": (0.0, 15.0),
+    "lab": (-30.0, -15.0),
     "multi": (30.0, 15.0),
-    "roblab": (-30.0, -15.0),
     "room": (0.0, -15.0),
     "tube": (30.0, -15.0),
 }
@@ -32,8 +32,8 @@ MIN_START_SEPARATION = 0.80
 TRAINING_POINT_COLORS = {
     "four_rooms": (1.0, 0.15, 0.10, 1.0),
     "hall": (0.10, 1.0, 0.20, 1.0),
+    "lab": (1.0, 0.80, 0.05, 1.0),
     "multi": (0.10, 0.35, 1.0, 1.0),
-    "roblab": (1.0, 0.80, 0.05, 1.0),
     "room": (1.0, 0.10, 0.85, 1.0),
     "tube": (0.05, 0.95, 1.0, 1.0),
 }

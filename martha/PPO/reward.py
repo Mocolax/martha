@@ -14,6 +14,91 @@ from dataclasses import dataclass
 import math
 
 
+class RewardNormalizer:
+    """Divide rewards by the running standard deviation of the discounted return.
+
+    This is CleanRL's ``NormalizeReward`` + ``TransformReward`` pair, which every
+    reference PPO applies to continuous-control tasks and which this trainer did
+    not have. Normalizing advantages only protects the *actor*: the critic still
+    regresses on raw returns, and with a terminal goal reward two orders of
+    magnitude above the per-step shaping, their variance is what keeps
+    ``explained_variance`` low.
+
+    The scale is deliberately not mean-centered -- shifting rewards would change
+    which behaviours are worth more than doing nothing.
+    """
+
+    def __init__(
+        self,
+        gamma: float,
+        # CleanRL clips at 10, which is meant for rare outliers. Here the return
+        # std settles near 4.4, so a 10 clip cut the +100 goal to +10 while a
+        # -20 collision stayed at -4.6: reaching the goal lost over half its
+        # weight and the policy traded stalls for wall crashes. 50 keeps the
+        # goal unclipped and still bounds genuine outliers.
+        clip: float = 50.0,
+        epsilon: float = 1e-8,
+    ) -> None:
+        if not 0.0 < gamma <= 1.0:
+            raise ValueError("gamma must be in (0, 1]")
+        if not math.isfinite(clip) or clip <= 0.0:
+            raise ValueError("clip must be positive and finite")
+        self.gamma = float(gamma)
+        self.clip = float(clip)
+        self.epsilon = float(epsilon)
+        self.mean = 0.0
+        self.m2 = 0.0
+        self.count = 0
+        self.discounted_return = 0.0
+
+    @property
+    def variance(self) -> float:
+        """Return the running variance of the discounted return."""
+        if self.count < 2:
+            return 1.0
+        return self.m2 / self.count
+
+    def normalize(self, reward: float, episode_end: bool) -> float:
+        """Scale one reward and fold it into the running estimate."""
+        reward = float(reward)
+        if not math.isfinite(reward):
+            raise FloatingPointError("reward to normalize is not finite")
+        self.discounted_return = self.discounted_return * self.gamma + reward
+        self.count += 1
+        delta = self.discounted_return - self.mean
+        self.mean += delta / self.count
+        self.m2 += delta * (self.discounted_return - self.mean)
+        scaled = reward / math.sqrt(self.variance + self.epsilon)
+        # Gymnasium carries the accumulator across episode boundaries; resetting
+        # it is what the wrapper documents and keeps one long episode from
+        # dominating the scale of the next.
+        if episode_end:
+            self.discounted_return = 0.0
+        return max(-self.clip, min(self.clip, scaled))
+
+    def state_dict(self) -> dict[str, float]:
+        """Return the running state so a resume continues the same scale."""
+        return {
+            "gamma": self.gamma,
+            "clip": self.clip,
+            "epsilon": self.epsilon,
+            "mean": self.mean,
+            "m2": self.m2,
+            "count": float(self.count),
+            "discounted_return": self.discounted_return,
+        }
+
+    def load_state_dict(self, state: dict[str, float]) -> None:
+        """Restore a running state produced by :meth:`state_dict`."""
+        self.gamma = float(state["gamma"])
+        self.clip = float(state["clip"])
+        self.epsilon = float(state["epsilon"])
+        self.mean = float(state["mean"])
+        self.m2 = float(state["m2"])
+        self.count = int(state["count"])
+        self.discounted_return = float(state["discounted_return"])
+
+
 REWARD_COMPONENT_NAMES = (
     "step",
     "distance",
@@ -74,10 +159,13 @@ class RewardConfig:
     # corridor's two walls form a valley the policy can center in ("rails")
     # from the distance reward alone. This is the main obstacle signal, since
     # entering the band is no longer terminal; only a bumper contact ends it.
-    # Lowered 0.06 -> 0.02: the clearance penalty was adding collision-aversion
-    # that discouraged moving through the arena; softening it lets the policy
-    # commit to the route and lean on the bumper-only collision signal instead.
-    laser_penalty_scale: float = 0.02
+    # Back to 0.06: 0.02 (a leftover from the no-obstacle isolation test) was too
+    # weak -- the policy followed the BFS route into the walls, ~40% collision.
+    # Per step next to a wall the clearance cost (~-0.03..-0.06) then roughly
+    # balances the ~+0.045 progress reward, so the robot rounds corners instead
+    # of charging, without the timidity a stronger 0.08+ brought in tight
+    # passages. 0.06 is also the value that produced the best run so far.
+    laser_penalty_scale: float = 0.06
     laser_penalty_midpoint: float = 0.45
     laser_penalty_steepness: float = 6.0
     # Approach braking: penalize linear speed only near the goal, so the robot

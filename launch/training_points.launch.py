@@ -83,7 +83,7 @@ def generate_launch_description():
                 "map",
                 default_value="room",
                 description=(
-                    "Mapa: four_rooms, hall, multi, roblab, room o tube"
+                    "Mapa: four_rooms, hall, lab, multi, room o tube"
                 ),
             ),
             DeclareLaunchArgument(

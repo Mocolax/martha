@@ -24,11 +24,17 @@ import numpy as np
 TRAINING_WORLD_NAMES = (
     "four_rooms",
     "hall",
+    "lab",
     "multi",
-    "roblab",
     "room",
     "tube",
 )
+# Fallback extent, kept only for callers that build a map with no geometry to
+# measure. Every shipped world derives its own bounds from its perimeter walls
+# instead: see ``arena_bounds_from_obstacles``. Forcing this 20x20 box on every
+# arena used to leave the space *outside* the walls inside the grid and
+# connected to the inside, so starts and goals were sampled in the void around
+# the arena -- lab.world reported 310 m2 of free space for a 71 m2 laboratory.
 LOCAL_ARENA_BOUNDS = (-10.0, 10.0, -10.0, 10.0)
 
 
@@ -120,8 +126,38 @@ class Obstacle(Protocol):
     x: float
     y: float
 
+    @property
+    def projected_half_x(self) -> float:
+        """Half of the XY-projected extent along x."""
+
+    @property
+    def projected_half_y(self) -> float:
+        """Half of the XY-projected extent along y."""
+
     def contains(self, x: np.ndarray, y: np.ndarray, margin: float) -> np.ndarray:
         """Return an occupancy mask."""
+
+
+def arena_bounds_from_obstacles(
+    obstacles: Iterable[Obstacle],
+) -> tuple[float, float, float, float]:
+    """Return the axis-aligned extent that the world's own geometry spans.
+
+    The perimeter walls are the outermost collisions in every shipped arena, so
+    their bounding box is the arena, and clipping the grid to it is what keeps
+    the outside of the arena out of the free space.
+    """
+    obstacles = tuple(obstacles)
+    if not obstacles:
+        raise ValueError("cannot derive arena bounds from a world with no geometry")
+    min_x = min(obstacle.x - obstacle.projected_half_x for obstacle in obstacles)
+    max_x = max(obstacle.x + obstacle.projected_half_x for obstacle in obstacles)
+    min_y = min(obstacle.y - obstacle.projected_half_y for obstacle in obstacles)
+    max_y = max(obstacle.y + obstacle.projected_half_y for obstacle in obstacles)
+    bounds = (float(min_x), float(max_x), float(min_y), float(max_y))
+    if not all(math.isfinite(value) for value in bounds):
+        raise ValueError("world geometry produced non-finite arena bounds")
+    return bounds
 
 
 @dataclass(frozen=True)
@@ -208,8 +244,14 @@ class WorldMap:
         path: str | Path,
         resolution: float = 0.10,
         robot_clearance: float = 0.45,
-        bounds: tuple[float, float, float, float] = LOCAL_ARENA_BOUNDS,
+        bounds: tuple[float, float, float, float] | None = None,
     ) -> "WorldMap":
+        """Build the inflated grid for one SDF arena.
+
+        ``bounds`` defaults to the arena's own perimeter, measured from the
+        geometry in the file. Pass an explicit box only to crop or extend a
+        world on purpose.
+        """
         path = Path(path).resolve()
         root = ET.parse(path).getroot()
         world = root.find("world")
@@ -268,7 +310,11 @@ class WorldMap:
         return cls(
             path=path,
             world_name=world.get("name", path.stem),
-            bounds=bounds,
+            bounds=(
+                arena_bounds_from_obstacles(obstacles)
+                if bounds is None
+                else bounds
+            ),
             obstacles=obstacles,
             model_xml=model_xml,
             resolution=resolution,

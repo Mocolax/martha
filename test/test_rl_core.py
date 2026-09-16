@@ -20,6 +20,7 @@ from martha.PPO.observations import (
 )
 from martha.PPO.reward import (
     RewardConfig,
+    RewardNormalizer,
     RewardState,
     calculate_reward,
     update_stagnation,
@@ -921,3 +922,42 @@ def test_paper_terminal_and_timeout_rewards_are_exclusive():
         for key, value in timeout_components.items()
         if key != "terminal"
     )
+
+
+def test_reward_normalizer_shrinks_the_scale_the_critic_must_learn():
+    """A terminal goal reward must not dominate the critic's target scale."""
+    normalizer = RewardNormalizer(gamma=0.997)
+    raw_returns = []
+    normalized_returns = []
+    for episode in range(30):
+        raw = 0.0
+        normalized = 0.0
+        for step in range(400):
+            reward = 0.05
+            if step == 399:
+                reward += 100.0 if episode % 3 == 0 else -20.0
+            raw += reward
+            normalized += normalizer.normalize(reward, episode_end=step == 399)
+        raw_returns.append(raw)
+        normalized_returns.append(normalized)
+
+    assert np.std(normalized_returns) < np.std(raw_returns) / 4.0
+    # Scaling, not shifting: a step that was better than doing nothing stays so.
+    assert normalizer.normalize(1.0, episode_end=False) > 0.0
+    assert normalizer.normalize(-1.0, episode_end=False) < 0.0
+
+
+def test_reward_normalizer_clips_outliers_and_survives_a_resume():
+    """The running scale has to be restored, or a resume rescales every target."""
+    normalizer = RewardNormalizer(gamma=0.99, clip=10.0)
+    for _ in range(50):
+        normalizer.normalize(0.1, episode_end=False)
+    assert abs(normalizer.normalize(1e6, episode_end=False)) <= 10.0
+
+    # A restored copy is in the same state, so the next reward scales the same.
+    restored = RewardNormalizer(gamma=0.99, clip=10.0)
+    restored.load_state_dict(normalizer.state_dict())
+    assert restored.normalize(0.3, episode_end=False) == pytest.approx(
+        normalizer.normalize(0.3, episode_end=False)
+    )
+    assert restored.state_dict() == normalizer.state_dict()

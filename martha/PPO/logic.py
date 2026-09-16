@@ -177,7 +177,9 @@ class PPOLogic:
             torch.min(surr1, surr2) * policy_masks
         ).sum() / policy_count
 
-        critic_loss = nn.MSELoss()(values, returns)
+        # The 0.5 belongs to the squared-error definition, so value_coef keeps
+        # the same meaning as CleanRL's vf_coef (0.5 * MSE, then * vf_coef).
+        critic_loss = 0.5 * nn.MSELoss()(values, returns)
         entropy_loss = (entropy * policy_masks).sum() / policy_count
         loss = (
             actor_loss
@@ -452,7 +454,7 @@ class PPOLogic:
         actor_loss = -(
             torch.min(surr1, surr2) * policy_valid
         ).sum() / policy_count
-        critic_loss = (
+        critic_loss = 0.5 * (
             values.sub(returns).square() * valid_masks
         ).sum() / valid_count
         entropy_loss = (entropy * policy_valid).sum() / policy_count
