@@ -1,0 +1,120 @@
+[INFO] [launch]: All log files can be found below /home/ros/.ros/log/2026-08-29-20-46-18-317315-predator-phn-1671-63789
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [gzserver-1]: process started with pid [63794]
+[INFO] [robot_state_publisher-2]: process started with pid [63796]
+[INFO] [ekf_node-3]: process started with pid [63798]
+[INFO] [robot_state_publisher-4]: process started with pid [63800]
+[INFO] [ekf_node-5]: process started with pid [63802]
+[INFO] [robot_state_publisher-6]: process started with pid [63804]
+[INFO] [ekf_node-7]: process started with pid [63806]
+[INFO] [robot_state_publisher-8]: process started with pid [63808]
+[INFO] [ekf_node-9]: process started with pid [63810]
+[INFO] [spawn_entity.py-10]: process started with pid [63812]
+[robot_state_publisher-4] [WARN] [1788036378.909010595] [kdl_parser]: The root link base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.
+[robot_state_publisher-4] [INFO] [1788036378.909071444] [martha_1.robot_state_publisher]: got segment base_link
+[robot_state_publisher-4] [INFO] [1788036378.909124215] [martha_1.robot_state_publisher]: got segment front_left_wheel
+[robot_state_publisher-4] [INFO] [1788036378.909128039] [martha_1.robot_state_publisher]: got segment front_right_wheel
+[robot_state_publisher-4] [INFO] [1788036378.909130844] [martha_1.robot_state_publisher]: got segment imu_link
+[robot_state_publisher-4] [INFO] [1788036378.909133471] [martha_1.robot_state_publisher]: got segment lidar
+[robot_state_publisher-4] [INFO] [1788036378.909136016] [martha_1.robot_state_publisher]: got segment rear_left_wheel
+[robot_state_publisher-4] [INFO] [1788036378.909138544] [martha_1.robot_state_publisher]: got segment rear_right_wheel
+[robot_state_publisher-6] [WARN] [1788036378.909893974] [kdl_parser]: The root link base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.
+[robot_state_publisher-6] [INFO] [1788036378.909943505] [martha_2.robot_state_publisher]: got segment base_link
+[robot_state_publisher-6] [INFO] [1788036378.909982890] [martha_2.robot_state_publisher]: got segment front_left_wheel
+[robot_state_publisher-6] [INFO] [1788036378.909986947] [martha_2.robot_state_publisher]: got segment front_right_wheel
+[robot_state_publisher-6] [INFO] [1788036378.909989694] [martha_2.robot_state_publisher]: got segment imu_link
+[robot_state_publisher-6] [INFO] [1788036378.909992320] [martha_2.robot_state_publisher]: got segment lidar
+[robot_state_publisher-6] [INFO] [1788036378.909994846] [martha_2.robot_state_publisher]: got segment rear_left_wheel
+[robot_state_publisher-6] [INFO] [1788036378.909997460] [martha_2.robot_state_publisher]: got segment rear_right_wheel
+[robot_state_publisher-2] [WARN] [1788036378.910751593] [kdl_parser]: The root link base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.
+[robot_state_publisher-2] [INFO] [1788036378.910799173] [martha_0.robot_state_publisher]: got segment base_link
+[robot_state_publisher-2] [INFO] [1788036378.910828937] [martha_0.robot_state_publisher]: got segment front_left_wheel
+[robot_state_publisher-2] [INFO] [1788036378.910832835] [martha_0.robot_state_publisher]: got segment front_right_wheel
+[robot_state_publisher-2] [INFO] [1788036378.910835752] [martha_0.robot_state_publisher]: got segment imu_link
+[robot_state_publisher-2] [INFO] [1788036378.910838369] [martha_0.robot_state_publisher]: got segment lidar
+[robot_state_publisher-2] [INFO] [1788036378.910840891] [martha_0.robot_state_publisher]: got segment rear_left_wheel
+[robot_state_publisher-2] [INFO] [1788036378.910843583] [martha_0.robot_state_publisher]: got segment rear_right_wheel
+[robot_state_publisher-8] [WARN] [1788036378.915335400] [kdl_parser]: The root link base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.
+[robot_state_publisher-8] [INFO] [1788036378.915410036] [martha_3.robot_state_publisher]: got segment base_link
+[robot_state_publisher-8] [INFO] [1788036378.915470996] [martha_3.robot_state_publisher]: got segment front_left_wheel
+[robot_state_publisher-8] [INFO] [1788036378.915480333] [martha_3.robot_state_publisher]: got segment front_right_wheel
+[robot_state_publisher-8] [INFO] [1788036378.915487914] [martha_3.robot_state_publisher]: got segment imu_link
+[robot_state_publisher-8] [INFO] [1788036378.915494992] [martha_3.robot_state_publisher]: got segment lidar
+[robot_state_publisher-8] [INFO] [1788036378.915501754] [martha_3.robot_state_publisher]: got segment rear_left_wheel
+[robot_state_publisher-8] [INFO] [1788036378.915508365] [martha_3.robot_state_publisher]: got segment rear_right_wheel
+[spawn_entity.py-10] [INFO] [1788036379.124033175] [urdf_spawner_martha_0]: Spawn Entity started
+[spawn_entity.py-10] [INFO] [1788036379.124233313] [urdf_spawner_martha_0]: Loading entity published on topic /martha_0/robot_description
+[spawn_entity.py-10] [INFO] [1788036379.125249497] [urdf_spawner_martha_0]: Waiting for entity xml on /martha_0/robot_description
+[spawn_entity.py-10] [INFO] [1788036379.136292586] [urdf_spawner_martha_0]: Waiting for service /spawn_entity, timeout = 30
+[spawn_entity.py-10] [INFO] [1788036379.136465553] [urdf_spawner_martha_0]: Waiting for service /spawn_entity
+[gzserver-1] [INFO] [1788036379.615203831] [gazebo.gazebo_ros_state]: Publishing states of gazebo models at [/gazebo/model_states]
+[gzserver-1] [INFO] [1788036379.615628738] [gazebo.gazebo_ros_state]: Publishing states of gazebo links at [/gazebo/link_states]
+[spawn_entity.py-10] [INFO] [1788036379.639020307] [urdf_spawner_martha_0]: Calling service /spawn_entity
+[gzserver-1] [INFO] [1788036379.735019707] [martha_0.gazebo_ros_bumper_martha_0]: Publishing contact states to [/martha_0/contacts]
+[spawn_entity.py-10] [INFO] [1788036379.769541414] [urdf_spawner_martha_0]: Spawn status: SpawnEntity: Successfully spawned entity [martha_0]
+[gzserver-1] [INFO] [1788036379.879913268] [martha_0.gazebo_ros_planar_move_martha_0]: Subscribed to [/martha_0/cmd_vel]
+[gzserver-1] [INFO] [1788036379.880987310] [martha_0.gazebo_ros_planar_move_martha_0]: Advertise odometry on [/martha_0/mecanum_drive_controller/odometry]
+[INFO] [spawn_entity.py-10]: process has finished cleanly [pid 63812]
+[INFO] [spawn_entity.py-11]: process started with pid [64059]
+[spawn_entity.py-11] [INFO] [1788036380.144544932] [urdf_spawner_martha_1]: Spawn Entity started
+[spawn_entity.py-11] [INFO] [1788036380.144748309] [urdf_spawner_martha_1]: Loading entity published on topic /martha_1/robot_description
+[spawn_entity.py-11] [INFO] [1788036380.145835202] [urdf_spawner_martha_1]: Waiting for entity xml on /martha_1/robot_description
+[spawn_entity.py-11] [INFO] [1788036380.156882051] [urdf_spawner_martha_1]: Waiting for service /spawn_entity, timeout = 30
+[spawn_entity.py-11] [INFO] [1788036380.157070284] [urdf_spawner_martha_1]: Waiting for service /spawn_entity
+[spawn_entity.py-11] [INFO] [1788036380.159102932] [urdf_spawner_martha_1]: Calling service /spawn_entity
+[gzserver-1] [INFO] [1788036381.317959033] [martha_1.gazebo_ros_bumper_martha_1]: Publishing contact states to [/martha_1/contacts]
+[spawn_entity.py-11] [INFO] [1788036381.340951122] [urdf_spawner_martha_1]: Spawn status: SpawnEntity: Successfully spawned entity [martha_1]
+[gzserver-1] [INFO] [1788036381.444349847] [martha_1.gazebo_ros_planar_move_martha_1]: Subscribed to [/martha_1/cmd_vel]
+[gzserver-1] [INFO] [1788036381.444752992] [martha_1.gazebo_ros_planar_move_martha_1]: Advertise odometry on [/martha_1/mecanum_drive_controller/odometry]
+[INFO] [spawn_entity.py-11]: process has finished cleanly [pid 64059]
+[INFO] [spawn_entity.py-12]: process started with pid [64084]
+[spawn_entity.py-12] [INFO] [1788036381.717000112] [urdf_spawner_martha_2]: Spawn Entity started
+[spawn_entity.py-12] [INFO] [1788036381.717194137] [urdf_spawner_martha_2]: Loading entity published on topic /martha_2/robot_description
+[spawn_entity.py-12] [INFO] [1788036381.718327264] [urdf_spawner_martha_2]: Waiting for entity xml on /martha_2/robot_description
+[spawn_entity.py-12] [INFO] [1788036382.697746014] [urdf_spawner_martha_2]: Waiting for service /spawn_entity, timeout = 30
+[spawn_entity.py-12] [INFO] [1788036382.697956773] [urdf_spawner_martha_2]: Waiting for service /spawn_entity
+[spawn_entity.py-12] [INFO] [1788036382.700124486] [urdf_spawner_martha_2]: Calling service /spawn_entity
+[gzserver-1] [INFO] [1788036382.902436007] [martha_2.gazebo_ros_bumper_martha_2]: Publishing contact states to [/martha_2/contacts]
+[spawn_entity.py-12] [INFO] [1788036382.925738080] [urdf_spawner_martha_2]: Spawn status: SpawnEntity: Successfully spawned entity [martha_2]
+[gzserver-1] [INFO] [1788036383.029648810] [martha_2.gazebo_ros_planar_move_martha_2]: Subscribed to [/martha_2/cmd_vel]
+[gzserver-1] [INFO] [1788036383.029873307] [martha_2.gazebo_ros_planar_move_martha_2]: Advertise odometry on [/martha_2/mecanum_drive_controller/odometry]
+[INFO] [spawn_entity.py-12]: process has finished cleanly [pid 64084]
+[INFO] [spawn_entity.py-13]: process started with pid [64102]
+[spawn_entity.py-13] [INFO] [1788036383.316222661] [urdf_spawner_martha_3]: Spawn Entity started
+[spawn_entity.py-13] [INFO] [1788036383.316445739] [urdf_spawner_martha_3]: Loading entity published on topic /martha_3/robot_description
+[spawn_entity.py-13] [INFO] [1788036383.317698709] [urdf_spawner_martha_3]: Waiting for entity xml on /martha_3/robot_description
+[spawn_entity.py-13] [INFO] [1788036383.328874148] [urdf_spawner_martha_3]: Waiting for service /spawn_entity, timeout = 30
+[spawn_entity.py-13] [INFO] [1788036383.329045261] [urdf_spawner_martha_3]: Waiting for service /spawn_entity
+[spawn_entity.py-13] [INFO] [1788036383.331008803] [urdf_spawner_martha_3]: Calling service /spawn_entity
+[gzserver-1] [INFO] [1788036384.485016890] [martha_3.gazebo_ros_bumper_martha_3]: Publishing contact states to [/martha_3/contacts]
+[spawn_entity.py-13] [INFO] [1788036384.509175590] [urdf_spawner_martha_3]: Spawn status: SpawnEntity: Successfully spawned entity [martha_3]
+[gzserver-1] [INFO] [1788036384.614112899] [martha_3.gazebo_ros_planar_move_martha_3]: Subscribed to [/martha_3/cmd_vel]
+[gzserver-1] [INFO] [1788036384.614409682] [martha_3.gazebo_ros_planar_move_martha_3]: Advertise odometry on [/martha_3/mecanum_drive_controller/odometry]
+[INFO] [spawn_entity.py-13]: process has finished cleanly [pid 64102]
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[INFO] [ekf_node-9]: sending signal 'SIGINT' to process[ekf_node-9]
+[INFO] [robot_state_publisher-8]: sending signal 'SIGINT' to process[robot_state_publisher-8]
+[INFO] [ekf_node-7]: sending signal 'SIGINT' to process[ekf_node-7]
+[INFO] [robot_state_publisher-6]: sending signal 'SIGINT' to process[robot_state_publisher-6]
+[INFO] [ekf_node-5]: sending signal 'SIGINT' to process[ekf_node-5]
+[ERROR] [ekf_node-9]: process has died [pid 63810, exit code -2, cmd '/opt/ros/humble/lib/robot_localization/ekf_node --ros-args -r __node:=ekf_filter_node -r __ns:=/martha_3 --params-file /home/ros/ros2_ws/install/martha/share/martha/config/ekf_rl_sim.yaml --params-file /tmp/launch_params_hp9ld7jm'].
+[ERROR] [robot_state_publisher-8]: process has died [pid 63808, exit code -2, cmd '/opt/ros/humble/lib/robot_state_publisher/robot_state_publisher --ros-args -r __node:=robot_state_publisher -r __ns:=/martha_3 --params-file /tmp/launch_params_5_khq3uf --params-file /tmp/launch_params_kn_41lj6 --params-file /tmp/launch_params__d4c10q5'].
+[INFO] [robot_state_publisher-4]: sending signal 'SIGINT' to process[robot_state_publisher-4]
+[ERROR] [ekf_node-7]: process has died [pid 63806, exit code -2, cmd '/opt/ros/humble/lib/robot_localization/ekf_node --ros-args -r __node:=ekf_filter_node -r __ns:=/martha_2 --params-file /home/ros/ros2_ws/install/martha/share/martha/config/ekf_rl_sim.yaml --params-file /tmp/launch_params_3r6en7tx'].
+[INFO] [ekf_node-3]: sending signal 'SIGINT' to process[ekf_node-3]
+[ERROR] [robot_state_publisher-6]: process has died [pid 63804, exit code -2, cmd '/opt/ros/humble/lib/robot_state_publisher/robot_state_publisher --ros-args -r __node:=robot_state_publisher -r __ns:=/martha_2 --params-file /tmp/launch_params_2k73cybw --params-file /tmp/launch_params_nrbmri5j --params-file /tmp/launch_params__92whg__'].
+[ERROR] [ekf_node-5]: process has died [pid 63802, exit code -2, cmd '/opt/ros/humble/lib/robot_localization/ekf_node --ros-args -r __node:=ekf_filter_node -r __ns:=/martha_1 --params-file /home/ros/ros2_ws/install/martha/share/martha/config/ekf_rl_sim.yaml --params-file /tmp/launch_params_zso_f740'].
+[INFO] [robot_state_publisher-2]: sending signal 'SIGINT' to process[robot_state_publisher-2]
+[INFO] [gzserver-1]: sending signal 'SIGINT' to process[gzserver-1]
+[ERROR] [robot_state_publisher-4]: process has died [pid 63800, exit code -2, cmd '/opt/ros/humble/lib/robot_state_publisher/robot_state_publisher --ros-args -r __node:=robot_state_publisher -r __ns:=/martha_1 --params-file /tmp/launch_params_18kduraf --params-file /tmp/launch_params_2_kgyjlu --params-file /tmp/launch_params_n65jxvsy'].
+[ekf_node-5] [INFO] [1788041885.469440078] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[ERROR] [ekf_node-3]: process has died [pid 63798, exit code -2, cmd '/opt/ros/humble/lib/robot_localization/ekf_node --ros-args -r __node:=ekf_filter_node -r __ns:=/martha_0 --params-file /home/ros/ros2_ws/install/martha/share/martha/config/ekf_rl_sim.yaml --params-file /tmp/launch_params_xkw9v6hq'].
+[robot_state_publisher-2] [INFO] [1788041885.469458871] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[ERROR] [robot_state_publisher-2]: process has died [pid 63796, exit code -2, cmd '/opt/ros/humble/lib/robot_state_publisher/robot_state_publisher --ros-args -r __node:=robot_state_publisher -r __ns:=/martha_0 --params-file /tmp/launch_params_mpxaar9y --params-file /tmp/launch_params_5m30i8as --params-file /tmp/launch_params_79tm4oz9'].
+[ekf_node-7] [INFO] [1788041885.469449743] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[robot_state_publisher-8] [INFO] [1788041885.469452642] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[robot_state_publisher-6] [INFO] [1788041885.469456821] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[robot_state_publisher-4] [INFO] [1788041885.469471904] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[ekf_node-9] [INFO] [1788041885.469437369] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[ekf_node-3] [INFO] [1788041885.469459340] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[INFO] [gzserver-1]: process has finished cleanly [pid 63794]

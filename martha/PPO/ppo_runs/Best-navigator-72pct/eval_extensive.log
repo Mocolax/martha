@@ -1,0 +1,198 @@
+Device: cuda
+Backend: gazebo
+Checkpoint episode: 2800
+Evaluating 6 map/backend target(s).
+map=00 episode=01 reward=  -20.43 steps= 34 goal=0 collision=1 SPL=0.000
+map=00 episode=02 reward=  111.67 steps=186 goal=1 collision=0 SPL=0.881
+map=00 episode=03 reward=  -14.68 steps= 74 goal=0 collision=1 SPL=0.000
+map=00 episode=04 reward=  113.39 steps=297 goal=1 collision=0 SPL=0.710
+map=00 episode=05 reward=  -15.74 steps= 60 goal=0 collision=1 SPL=0.000
+map=00 episode=06 reward=    0.88 steps=387 goal=0 collision=1 SPL=0.000
+map=00 episode=07 reward=  112.47 steps=415 goal=1 collision=0 SPL=0.525
+map=00 episode=08 reward=  128.02 steps=303 goal=1 collision=0 SPL=0.902
+map=00 episode=09 reward=  -13.89 steps= 94 goal=0 collision=1 SPL=0.000
+map=00 episode=10 reward=   -4.50 steps=160 goal=0 collision=1 SPL=0.000
+map=00 episode=11 reward=  117.96 steps=324 goal=1 collision=0 SPL=0.705
+map=00 episode=12 reward=  118.25 steps=237 goal=1 collision=0 SPL=0.883
+map=00 episode=13 reward=  -10.46 steps=166 goal=0 collision=1 SPL=0.000
+map=00 episode=14 reward=  123.72 steps=310 goal=1 collision=0 SPL=0.896
+map=00 episode=15 reward=    9.13 steps=421 goal=0 collision=0 SPL=0.000
+map=00 episode=16 reward=  118.02 steps=237 goal=1 collision=0 SPL=0.841
+map=00 episode=17 reward=  118.03 steps=403 goal=1 collision=0 SPL=0.684
+map=00 episode=18 reward=  107.23 steps=231 goal=1 collision=0 SPL=0.532
+map=00 episode=19 reward=   -3.12 steps=303 goal=0 collision=1 SPL=0.000
+map=00 episode=20 reward=  -20.51 steps= 18 goal=0 collision=1 SPL=0.000
+map=00 episode=21 reward=  113.51 steps=277 goal=1 collision=0 SPL=0.692
+map=00 episode=22 reward=  119.59 steps=374 goal=1 collision=0 SPL=0.730
+map=00 episode=23 reward=   13.18 steps=418 goal=0 collision=0 SPL=0.000
+map=00 episode=24 reward=  113.04 steps=194 goal=1 collision=0 SPL=0.868
+map=00 episode=25 reward=   21.52 steps=491 goal=0 collision=0 SPL=0.000
+map=00 episode=26 reward=  121.62 steps=283 goal=1 collision=0 SPL=0.875
+map=00 episode=27 reward=  117.55 steps=214 goal=1 collision=0 SPL=0.920
+map=00 episode=28 reward=  129.30 steps=368 goal=1 collision=0 SPL=0.910
+map=00 episode=29 reward=   -5.50 steps=159 goal=0 collision=1 SPL=0.000
+map=00 episode=30 reward=  114.73 steps=347 goal=1 collision=0 SPL=0.627
+map=01 episode=01 reward=   -6.01 steps=292 goal=0 collision=1 SPL=0.000
+map=01 episode=02 reward=  134.36 steps=414 goal=1 collision=0 SPL=0.947
+map=01 episode=03 reward=  105.27 steps=185 goal=1 collision=0 SPL=0.518
+map=01 episode=04 reward=  137.55 steps=483 goal=1 collision=0 SPL=0.880
+map=01 episode=05 reward=   -1.32 steps=258 goal=0 collision=1 SPL=0.000
+map=01 episode=06 reward=  118.10 steps=234 goal=1 collision=0 SPL=0.865
+map=01 episode=07 reward=  116.56 steps=325 goal=1 collision=0 SPL=0.654
+map=01 episode=08 reward=   -7.06 steps=155 goal=0 collision=1 SPL=0.000
+map=01 episode=09 reward=  117.96 steps=222 goal=1 collision=0 SPL=0.897
+map=01 episode=10 reward=  134.46 steps=381 goal=1 collision=0 SPL=0.961
+map=01 episode=11 reward=  137.23 steps=459 goal=1 collision=0 SPL=0.963
+map=01 episode=12 reward=  141.64 steps=505 goal=1 collision=0 SPL=0.938
+map=01 episode=13 reward=   -2.70 steps=206 goal=0 collision=1 SPL=0.000
+map=01 episode=14 reward=    9.32 steps=426 goal=0 collision=1 SPL=0.000
+map=01 episode=15 reward=  120.86 steps=257 goal=1 collision=0 SPL=0.925
+map=01 episode=16 reward=  -20.39 steps= 11 goal=0 collision=1 SPL=0.000
+map=01 episode=17 reward=  121.96 steps=261 goal=1 collision=0 SPL=0.897
+map=01 episode=18 reward=   -7.93 steps=218 goal=0 collision=1 SPL=0.000
+map=01 episode=19 reward=  -19.81 steps= 27 goal=0 collision=1 SPL=0.000
+map=01 episode=20 reward=  120.41 steps=357 goal=1 collision=0 SPL=0.706
+map=01 episode=21 reward=  116.35 steps=271 goal=1 collision=0 SPL=0.901
+map=01 episode=22 reward=  126.43 steps=353 goal=1 collision=0 SPL=0.858
+map=01 episode=23 reward=   -1.31 steps=221 goal=0 collision=1 SPL=0.000
+map=01 episode=24 reward=  110.33 steps=167 goal=1 collision=0 SPL=0.786
+map=01 episode=25 reward=  107.15 steps=173 goal=1 collision=0 SPL=0.572
+map=01 episode=26 reward=  123.50 steps=327 goal=1 collision=0 SPL=0.879
+map=01 episode=27 reward=  115.99 steps=299 goal=1 collision=0 SPL=0.699
+map=01 episode=28 reward=  139.30 steps=507 goal=1 collision=0 SPL=0.845
+map=01 episode=29 reward=  117.81 steps=353 goal=1 collision=0 SPL=0.737
+map=01 episode=30 reward=   -9.42 steps=227 goal=0 collision=1 SPL=0.000
+map=02 episode=01 reward=  108.17 steps=115 goal=1 collision=0 SPL=0.877
+map=02 episode=02 reward=  -19.98 steps=  7 goal=0 collision=1 SPL=0.000
+map=02 episode=03 reward=  -17.22 steps=155 goal=0 collision=1 SPL=0.000
+map=02 episode=04 reward=    0.68 steps=256 goal=0 collision=0 SPL=0.000
+map=02 episode=05 reward=  102.96 steps= 69 goal=1 collision=0 SPL=0.775
+map=02 episode=06 reward=  113.76 steps=221 goal=1 collision=0 SPL=0.901
+map=02 episode=07 reward=  108.37 steps=123 goal=1 collision=0 SPL=0.905
+map=02 episode=08 reward=  103.46 steps= 75 goal=1 collision=0 SPL=0.802
+map=02 episode=09 reward=  106.80 steps= 94 goal=1 collision=0 SPL=0.876
+map=02 episode=10 reward=  107.29 steps=157 goal=1 collision=0 SPL=0.861
+map=02 episode=11 reward=  -20.65 steps= 44 goal=0 collision=1 SPL=0.000
+map=02 episode=12 reward=  112.26 steps=170 goal=1 collision=0 SPL=0.893
+map=02 episode=13 reward=  104.22 steps= 75 goal=1 collision=0 SPL=0.813
+map=02 episode=14 reward=  109.75 steps=151 goal=1 collision=0 SPL=0.894
+map=02 episode=15 reward=  105.45 steps= 84 goal=1 collision=0 SPL=0.832
+map=02 episode=16 reward=   -9.59 steps=229 goal=0 collision=1 SPL=0.000
+map=02 episode=17 reward=  105.34 steps=105 goal=1 collision=0 SPL=0.810
+map=02 episode=18 reward=  103.98 steps= 87 goal=1 collision=0 SPL=0.788
+map=02 episode=19 reward=  107.14 steps=115 goal=1 collision=0 SPL=0.812
+map=02 episode=20 reward=  106.61 steps=122 goal=1 collision=0 SPL=0.849
+map=02 episode=21 reward=  -19.71 steps= 46 goal=0 collision=1 SPL=0.000
+map=02 episode=22 reward=  117.45 steps=250 goal=1 collision=0 SPL=0.924
+map=02 episode=23 reward=  111.10 steps=154 goal=1 collision=0 SPL=0.880
+map=02 episode=24 reward=  -17.56 steps= 50 goal=0 collision=1 SPL=0.000
+map=02 episode=25 reward=  -19.79 steps= 13 goal=0 collision=1 SPL=0.000
+map=02 episode=26 reward=  112.52 steps=189 goal=1 collision=0 SPL=0.850
+map=02 episode=27 reward=  109.14 steps=146 goal=1 collision=0 SPL=0.847
+map=02 episode=28 reward=  104.90 steps=246 goal=1 collision=0 SPL=0.409
+map=02 episode=29 reward=   -9.29 steps=240 goal=0 collision=1 SPL=0.000
+map=02 episode=30 reward=  106.78 steps=122 goal=1 collision=0 SPL=0.795
+map=03 episode=01 reward=  146.00 steps=509 goal=1 collision=0 SPL=0.979
+map=03 episode=02 reward=  131.86 steps=476 goal=1 collision=0 SPL=0.894
+map=03 episode=03 reward=  141.51 steps=625 goal=1 collision=0 SPL=0.879
+map=03 episode=04 reward=  132.28 steps=474 goal=1 collision=0 SPL=0.926
+map=03 episode=05 reward=  122.10 steps=331 goal=1 collision=0 SPL=0.901
+map=03 episode=06 reward=  103.89 steps= 86 goal=1 collision=0 SPL=0.716
+map=03 episode=07 reward=  138.57 steps=506 goal=1 collision=0 SPL=0.929
+map=03 episode=08 reward=  -16.88 steps= 63 goal=0 collision=1 SPL=0.000
+map=03 episode=09 reward=  103.82 steps=106 goal=1 collision=0 SPL=0.700
+map=03 episode=10 reward=  -12.50 steps=282 goal=0 collision=1 SPL=0.000
+map=03 episode=11 reward=    9.18 steps=377 goal=0 collision=1 SPL=0.000
+map=03 episode=12 reward=  -13.95 steps= 93 goal=0 collision=1 SPL=0.000
+map=03 episode=13 reward=  109.61 steps=189 goal=1 collision=0 SPL=0.865
+map=03 episode=14 reward=  -16.13 steps= 88 goal=0 collision=1 SPL=0.000
+map=03 episode=15 reward=  135.37 steps=527 goal=1 collision=0 SPL=0.872
+map=03 episode=16 reward=  -20.74 steps= 59 goal=0 collision=1 SPL=0.000
+map=03 episode=17 reward=  124.63 steps=296 goal=1 collision=0 SPL=0.986
+map=03 episode=18 reward=  137.16 steps=627 goal=1 collision=0 SPL=0.792
+map=03 episode=19 reward=  105.42 steps=101 goal=1 collision=0 SPL=0.752
+map=03 episode=20 reward=    5.31 steps=300 goal=0 collision=1 SPL=0.000
+map=03 episode=21 reward=  134.57 steps=628 goal=1 collision=0 SPL=0.764
+map=03 episode=22 reward=  -19.06 steps= 30 goal=0 collision=1 SPL=0.000
+map=03 episode=23 reward=  109.59 steps=494 goal=1 collision=0 SPL=0.396
+map=03 episode=24 reward=  106.81 steps=180 goal=1 collision=0 SPL=0.512
+map=03 episode=25 reward=  -17.55 steps=107 goal=0 collision=1 SPL=0.000
+map=03 episode=26 reward=  116.27 steps=196 goal=1 collision=0 SPL=0.872
+map=03 episode=27 reward=  124.05 steps=287 goal=1 collision=0 SPL=0.933
+map=03 episode=28 reward=  -20.33 steps= 19 goal=0 collision=1 SPL=0.000
+map=03 episode=29 reward=  136.33 steps=753 goal=1 collision=0 SPL=0.714
+map=03 episode=30 reward=   -7.86 steps=163 goal=0 collision=1 SPL=0.000
+map=04 episode=01 reward=  122.16 steps=285 goal=1 collision=0 SPL=0.939
+map=04 episode=02 reward=  133.73 steps=557 goal=1 collision=0 SPL=0.790
+map=04 episode=03 reward=  117.89 steps=212 goal=1 collision=0 SPL=0.942
+map=04 episode=04 reward=  116.09 steps=215 goal=1 collision=0 SPL=0.883
+map=04 episode=05 reward=  116.09 steps=399 goal=1 collision=0 SPL=0.624
+map=04 episode=06 reward=  118.33 steps=332 goal=1 collision=0 SPL=0.695
+map=04 episode=07 reward=  114.69 steps=213 goal=1 collision=0 SPL=0.873
+map=04 episode=08 reward=  114.41 steps=181 goal=1 collision=0 SPL=0.916
+map=04 episode=09 reward=  130.08 steps=496 goal=1 collision=0 SPL=0.705
+map=04 episode=10 reward=  117.93 steps=760 goal=1 collision=0 SPL=0.700
+map=04 episode=11 reward=    2.99 steps=280 goal=0 collision=0 SPL=0.000
+map=04 episode=12 reward=  126.96 steps=470 goal=1 collision=0 SPL=0.729
+map=04 episode=13 reward=  114.77 steps=182 goal=1 collision=0 SPL=0.934
+map=04 episode=14 reward=  110.07 steps=289 goal=1 collision=0 SPL=0.518
+map=04 episode=15 reward=  113.04 steps=203 goal=1 collision=0 SPL=0.820
+map=04 episode=16 reward=  103.30 steps=172 goal=1 collision=0 SPL=0.368
+map=04 episode=17 reward=  121.14 steps=349 goal=1 collision=0 SPL=0.804
+map=04 episode=18 reward=  129.74 steps=513 goal=1 collision=0 SPL=0.720
+map=04 episode=19 reward=  130.36 steps=342 goal=1 collision=0 SPL=0.961
+map=04 episode=20 reward=  112.71 steps=232 goal=1 collision=0 SPL=0.768
+map=04 episode=21 reward=  123.21 steps=452 goal=1 collision=0 SPL=0.649
+map=04 episode=22 reward=  115.92 steps=282 goal=1 collision=0 SPL=0.738
+map=04 episode=23 reward=  116.79 steps=297 goal=1 collision=0 SPL=0.748
+map=04 episode=24 reward=  134.22 steps=447 goal=1 collision=0 SPL=0.889
+map=04 episode=25 reward=  125.93 steps=434 goal=1 collision=0 SPL=0.795
+map=04 episode=26 reward=  128.58 steps=398 goal=1 collision=0 SPL=0.879
+map=04 episode=27 reward=  124.25 steps=290 goal=1 collision=0 SPL=0.919
+map=04 episode=28 reward=  -12.16 steps=224 goal=0 collision=1 SPL=0.000
+map=04 episode=29 reward=  117.08 steps=380 goal=1 collision=0 SPL=0.625
+map=04 episode=30 reward=  122.41 steps=304 goal=1 collision=0 SPL=0.751
+map=05 episode=01 reward=  157.89 steps=677 goal=1 collision=0 SPL=0.891
+map=05 episode=02 reward=  106.40 steps=232 goal=1 collision=0 SPL=0.477
+map=05 episode=03 reward=    8.60 steps=410 goal=0 collision=1 SPL=0.000
+map=05 episode=04 reward=  112.91 steps=142 goal=1 collision=0 SPL=0.937
+map=05 episode=05 reward=   25.55 steps=604 goal=0 collision=1 SPL=0.000
+map=05 episode=06 reward=  129.17 steps=367 goal=1 collision=0 SPL=0.908
+map=05 episode=07 reward=    6.49 steps=306 goal=0 collision=0 SPL=0.000
+map=05 episode=08 reward=  113.69 steps=237 goal=1 collision=0 SPL=0.905
+map=05 episode=09 reward=  113.62 steps=198 goal=1 collision=0 SPL=0.862
+map=05 episode=10 reward=  106.51 steps=105 goal=1 collision=0 SPL=0.831
+map=05 episode=11 reward=  140.53 steps=499 goal=1 collision=0 SPL=0.923
+map=05 episode=12 reward=  139.03 steps=584 goal=1 collision=0 SPL=0.845
+map=05 episode=13 reward=  103.51 steps=232 goal=1 collision=0 SPL=0.363
+map=05 episode=14 reward=  110.84 steps=137 goal=1 collision=0 SPL=0.930
+map=05 episode=15 reward=  134.09 steps=370 goal=1 collision=0 SPL=0.964
+map=05 episode=16 reward=  135.17 steps=526 goal=1 collision=0 SPL=0.880
+map=05 episode=17 reward=  131.68 steps=387 goal=1 collision=0 SPL=0.930
+map=05 episode=18 reward=  110.93 steps=167 goal=1 collision=0 SPL=0.876
+map=05 episode=19 reward=    7.76 steps=451 goal=0 collision=1 SPL=0.000
+map=05 episode=20 reward=  107.32 steps=156 goal=1 collision=0 SPL=0.751
+map=05 episode=21 reward=   -2.86 steps=206 goal=0 collision=1 SPL=0.000
+map=05 episode=22 reward=  114.14 steps=273 goal=1 collision=0 SPL=0.698
+map=05 episode=23 reward=  102.91 steps=111 goal=1 collision=0 SPL=0.509
+map=05 episode=24 reward=  104.49 steps=121 goal=1 collision=0 SPL=0.637
+map=05 episode=25 reward=  146.69 steps=569 goal=1 collision=0 SPL=0.934
+map=05 episode=26 reward=  106.47 steps=307 goal=1 collision=0 SPL=0.401
+map=05 episode=27 reward=  108.56 steps=118 goal=1 collision=0 SPL=0.865
+map=05 episode=28 reward=  116.11 steps=401 goal=1 collision=0 SPL=0.600
+map=05 episode=29 reward=  105.41 steps=158 goal=1 collision=0 SPL=0.573
+map=05 episode=30 reward=  -18.35 steps= 39 goal=0 collision=1 SPL=0.000
+
+Checkpoint: /home/ros/ros2_ws/src/martha/martha/PPO/ppo_runs/ppo_martha_20260915_142234/best_model.pt
+map | episodes | reward | success | collision | SPL
+----|----------|--------|---------|-----------|------
+  0 |       30 |  64.47 |    0.57 |      0.33 | 0.44
+  1 |       30 |  79.89 |    0.67 |      0.33 | 0.55
+  2 |       30 |  71.14 |    0.70 |      0.27 | 0.58
+  3 |       30 |  74.31 |    0.63 |      0.37 | 0.51
+  4 |       30 | 112.09 |    0.93 |      0.03 | 0.72
+  5 |       30 |  96.18 |    0.80 |      0.17 | 0.62
+----|----------|--------|---------|-----------|------
+all |      180 |  83.01 |    0.72 |      0.25 | 0.57
+
+CSV: /home/ros/ros2_ws/src/martha/martha/PPO/ppo_runs/ppo_martha_20260915_142234/eval_extensive.csv

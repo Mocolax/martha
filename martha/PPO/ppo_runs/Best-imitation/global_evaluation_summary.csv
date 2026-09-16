@@ -1,0 +1,8 @@
+map_index,episodes,successes,success_rate,collisions,timeouts,evidence
+0,5,5,1.0,0,0,global_eval_runtime_before_gazebo_factory_failure
+1,5,3,0.6,0,2,global_eval_runtime_before_gazebo_factory_failure
+2,5,4,0.8,0,1,global_eval_runtime_before_gazebo_factory_failure
+3,5,3,0.6,0,2,global_eval_map3.csv
+4,5,5,1.0,0,0,global_eval_map4.csv
+5,5,3,0.6,0,2,global_eval_map5.csv
+all,30,23,0.7666666667,0,7,aggregate

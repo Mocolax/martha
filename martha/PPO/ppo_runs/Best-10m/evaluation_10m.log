@@ -1,0 +1,76 @@
+Device: cuda
+Backend: gazebo
+Checkpoint episode: 4500
+Evaluating 6 map/backend target(s).
+map=00 episode=01 reward=   -0.20 steps=454 goal=0 collision=0 SPL=0.000
+map=00 episode=02 reward=   -0.33 steps=381 goal=0 collision=0 SPL=0.000
+map=00 episode=03 reward=   11.35 steps=127 goal=1 collision=0 SPL=0.899
+map=00 episode=04 reward=   10.54 steps=105 goal=1 collision=0 SPL=0.927
+map=00 episode=05 reward=   -1.21 steps=298 goal=0 collision=0 SPL=0.000
+map=00 episode=06 reward=   -0.76 steps=386 goal=0 collision=0 SPL=0.000
+map=00 episode=07 reward=   -0.67 steps=368 goal=0 collision=0 SPL=0.000
+map=00 episode=08 reward=   -0.49 steps=336 goal=0 collision=0 SPL=0.000
+map=00 episode=09 reward=   -0.42 steps=370 goal=0 collision=0 SPL=0.000
+map=00 episode=10 reward=   -0.92 steps=308 goal=0 collision=0 SPL=0.000
+map=01 episode=01 reward=    0.24 steps=455 goal=0 collision=0 SPL=0.000
+map=01 episode=02 reward=   -0.25 steps=378 goal=0 collision=0 SPL=0.000
+map=01 episode=03 reward=   -1.60 steps=250 goal=0 collision=0 SPL=0.000
+map=01 episode=04 reward=   -1.50 steps=362 goal=0 collision=0 SPL=0.000
+map=01 episode=05 reward=    0.22 steps=383 goal=0 collision=0 SPL=0.000
+map=01 episode=06 reward=    0.05 steps=401 goal=0 collision=0 SPL=0.000
+map=01 episode=07 reward=    0.09 steps=468 goal=0 collision=0 SPL=0.000
+map=01 episode=08 reward=    0.13 steps=457 goal=0 collision=0 SPL=0.000
+map=01 episode=09 reward=    0.20 steps=394 goal=0 collision=0 SPL=0.000
+map=01 episode=10 reward=   -1.06 steps=353 goal=0 collision=0 SPL=0.000
+map=02 episode=01 reward=    0.16 steps=466 goal=0 collision=0 SPL=0.000
+map=02 episode=02 reward=   -0.96 steps=371 goal=0 collision=0 SPL=0.000
+map=02 episode=03 reward=   -1.42 steps=283 goal=0 collision=0 SPL=0.000
+map=02 episode=04 reward=   -1.44 steps=391 goal=0 collision=0 SPL=0.000
+map=02 episode=05 reward=   -0.82 steps=345 goal=0 collision=0 SPL=0.000
+map=02 episode=06 reward=   -0.47 steps=362 goal=0 collision=0 SPL=0.000
+map=02 episode=07 reward=   11.02 steps=108 goal=1 collision=0 SPL=0.877
+map=02 episode=08 reward=   -1.70 steps=327 goal=0 collision=0 SPL=0.000
+map=02 episode=09 reward=   -1.60 steps=250 goal=0 collision=0 SPL=0.000
+map=02 episode=10 reward=   -0.82 steps=374 goal=0 collision=0 SPL=0.000
+map=03 episode=01 reward=   -4.35 steps= 27 goal=0 collision=1 SPL=0.000
+map=03 episode=02 reward=   11.80 steps=145 goal=1 collision=0 SPL=1.000
+map=03 episode=03 reward=   -1.16 steps=344 goal=0 collision=0 SPL=0.000
+map=03 episode=04 reward=   -1.32 steps=391 goal=0 collision=0 SPL=0.000
+map=03 episode=05 reward=   -0.83 steps=591 goal=0 collision=0 SPL=0.000
+map=03 episode=06 reward=    0.23 steps=424 goal=0 collision=0 SPL=0.000
+map=03 episode=07 reward=   -1.42 steps=389 goal=0 collision=0 SPL=0.000
+map=03 episode=08 reward=   11.85 steps=154 goal=1 collision=0 SPL=1.000
+map=03 episode=09 reward=   -1.46 steps=319 goal=0 collision=0 SPL=0.000
+map=03 episode=10 reward=   -1.22 steps=362 goal=0 collision=0 SPL=0.000
+map=04 episode=01 reward=   -1.71 steps=302 goal=0 collision=0 SPL=0.000
+map=04 episode=02 reward=   -1.24 steps=451 goal=0 collision=0 SPL=0.000
+map=04 episode=03 reward=   11.52 steps=156 goal=1 collision=0 SPL=0.955
+map=04 episode=04 reward=   11.53 steps=136 goal=1 collision=0 SPL=0.963
+map=04 episode=05 reward=   -0.69 steps=378 goal=0 collision=0 SPL=0.000
+map=04 episode=06 reward=    0.15 steps=472 goal=0 collision=0 SPL=0.000
+map=04 episode=07 reward=    0.18 steps=419 goal=0 collision=0 SPL=0.000
+map=04 episode=08 reward=   -0.09 steps=418 goal=0 collision=0 SPL=0.000
+map=04 episode=09 reward=   -1.46 steps=267 goal=0 collision=0 SPL=0.000
+map=04 episode=10 reward=   12.33 steps=192 goal=1 collision=0 SPL=1.000
+map=05 episode=01 reward=   11.85 steps=262 goal=1 collision=0 SPL=0.848
+map=05 episode=02 reward=   10.62 steps=171 goal=1 collision=0 SPL=0.699
+map=05 episode=03 reward=   11.32 steps=128 goal=1 collision=0 SPL=0.884
+map=05 episode=04 reward=   11.50 steps=131 goal=1 collision=0 SPL=1.000
+map=05 episode=05 reward=   -2.06 steps=278 goal=0 collision=1 SPL=0.000
+map=05 episode=06 reward=   11.11 steps= 96 goal=1 collision=0 SPL=1.000
+map=05 episode=07 reward=   11.44 steps=116 goal=1 collision=0 SPL=1.000
+map=05 episode=08 reward=   12.19 steps=226 goal=1 collision=0 SPL=0.931
+map=05 episode=09 reward=   -0.64 steps=456 goal=0 collision=0 SPL=0.000
+map=05 episode=10 reward=   11.01 steps= 95 goal=1 collision=0 SPL=1.000
+
+Checkpoint: /home/ros/ros2_ws/src/martha/martha/PPO/ppo_runs/Best-10m/best_model.pt
+map | episodes | reward | success | collision | SPL
+----|----------|--------|---------|-----------|------
+  0 |       10 |   1.69 |    0.20 |      0.00 | 0.18
+  1 |       10 |  -0.35 |    0.00 |      0.00 | 0.00
+  2 |       10 |   0.20 |    0.10 |      0.00 | 0.09
+  3 |       10 |   1.21 |    0.20 |      0.10 | 0.20
+  4 |       10 |   3.05 |    0.30 |      0.00 | 0.29
+  5 |       10 |   8.83 |    0.80 |      0.10 | 0.74
+----|----------|--------|---------|-----------|------
+all |       60 |   2.44 |    0.27 |      0.03 | 0.25

@@ -1,0 +1,37 @@
+[INFO] [launch]: All log files can be found below /home/ros/.ros/log/2026-09-15-14-22-34-362485-predator-phn-1671-380
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [gzserver-1]: process started with pid [382]
+[INFO] [robot_state_publisher-2]: process started with pid [384]
+[INFO] [ekf_node-3]: process started with pid [386]
+[INFO] [spawn_entity.py-4]: process started with pid [388]
+[robot_state_publisher-2] [WARN] [1789482154.716770581] [kdl_parser]: The root link base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.
+[robot_state_publisher-2] [INFO] [1789482154.716821172] [robot_state_publisher]: got segment base_link
+[robot_state_publisher-2] [INFO] [1789482154.716860411] [robot_state_publisher]: got segment front_left_wheel
+[robot_state_publisher-2] [INFO] [1789482154.716863418] [robot_state_publisher]: got segment front_right_wheel
+[robot_state_publisher-2] [INFO] [1789482154.716865727] [robot_state_publisher]: got segment imu_link
+[robot_state_publisher-2] [INFO] [1789482154.716868040] [robot_state_publisher]: got segment lidar
+[robot_state_publisher-2] [INFO] [1789482154.716870575] [robot_state_publisher]: got segment rear_left_wheel
+[robot_state_publisher-2] [INFO] [1789482154.716872705] [robot_state_publisher]: got segment rear_right_wheel
+[spawn_entity.py-4] [INFO] [1789482154.907319115] [urdf_spawner_robot]: Spawn Entity started
+[spawn_entity.py-4] [INFO] [1789482154.907525390] [urdf_spawner_robot]: Loading entity published on topic /robot_description
+[spawn_entity.py-4] [INFO] [1789482154.910352070] [urdf_spawner_robot]: Waiting for entity xml on /robot_description
+[spawn_entity.py-4] [INFO] [1789482154.921527557] [urdf_spawner_robot]: Waiting for service /spawn_entity, timeout = 30
+[spawn_entity.py-4] [INFO] [1789482154.921707579] [urdf_spawner_robot]: Waiting for service /spawn_entity
+[gzserver-1] [INFO] [1789482155.450148454] [gazebo.gazebo_ros_state]: Publishing states of gazebo models at [/gazebo/model_states]
+[gzserver-1] [INFO] [1789482155.450750649] [gazebo.gazebo_ros_state]: Publishing states of gazebo links at [/gazebo/link_states]
+[spawn_entity.py-4] [INFO] [1789482155.681722760] [urdf_spawner_robot]: Calling service /spawn_entity
+[gzserver-1] [INFO] [1789482155.795838356] [gazebo_ros_bumper_]: Publishing contact states to [/contacts]
+[spawn_entity.py-4] [INFO] [1789482155.853829793] [urdf_spawner_robot]: Spawn status: SpawnEntity: Successfully spawned entity [robot]
+[gzserver-1] [INFO] [1789482155.968734695] [gazebo_ros_planar_move_]: Subscribed to [/cmd_vel]
+[gzserver-1] [INFO] [1789482155.970254396] [gazebo_ros_planar_move_]: Advertise odometry on [/mecanum_drive_controller/odometry]
+[INFO] [spawn_entity.py-4]: process has finished cleanly [pid 388]
+[ekf_node-3] Failed to meet update rate! Took 0.10000000000000000555seconds. Try decreasing the rate, limiting sensor output frequency, or limiting the number of sensors.
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[INFO] [ekf_node-3]: sending signal 'SIGINT' to process[ekf_node-3]
+[INFO] [robot_state_publisher-2]: sending signal 'SIGINT' to process[robot_state_publisher-2]
+[INFO] [gzserver-1]: sending signal 'SIGINT' to process[gzserver-1]
+[robot_state_publisher-2] [INFO] [1789546726.064920639] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[ERROR] [ekf_node-3]: process has died [pid 386, exit code -2, cmd '/opt/ros/humble/lib/robot_localization/ekf_node --ros-args -r __node:=ekf_filter_node -r __ns:=/ --params-file /home/ros/ros2_ws/install/martha/share/martha/config/ekf_rl_sim.yaml --params-file /tmp/launch_params_9mkefblc'].
+[ekf_node-3] [INFO] [1789546726.064901762] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[ERROR] [robot_state_publisher-2]: process has died [pid 384, exit code -2, cmd '/opt/ros/humble/lib/robot_state_publisher/robot_state_publisher --ros-args -r __node:=robot_state_publisher -r __ns:=/ --params-file /tmp/launch_params_9pjof07b --params-file /tmp/launch_params_u_fqc5ee --params-file /tmp/launch_params_kmv2fbem'].
+[INFO] [gzserver-1]: process has finished cleanly [pid 382]

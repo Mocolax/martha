@@ -1,0 +1,29 @@
+INFORME DE ENTRENAMIENTO PPO MARTHA
+====================================
+Episodios registrados: 10693
+Ventana comparada: 100 episodios
+
+Primeros -> últimos episodios
+- Recompensa: -0.61 -> 0.18
+- Tasa de éxito: 2.00% -> 39.00%
+- Tasa de colisión: 88.00% -> 45.00%
+- Fuera de límites: 1.00% -> 0.00%
+- Tasa de truncamiento: 10.00% -> 16.00%
+- SPL: 0.01 -> 0.30
+- Duración: 174.56 -> 163.49
+
+Componentes medios de recompensa (última ventana)
+- Distancia: 0.0315
+- Orientación: 0.0020
+- Récord de cercanía: 0.1024
+- Láser: -0.0066
+- Zigzag: 0.0000
+- Terminal: 0.0525
+
+Indicadores PPO (última ventana)
+- Explained variance: 0.9209
+- Approx KL: 0.014342
+- Clip fraction: 0.1799
+
+Sugerencias automáticas (heurísticas)
+- No se activó ninguna alerta simple; compara especialmente la evaluación determinista y las tendencias, no un episodio aislado.

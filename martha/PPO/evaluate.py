@@ -37,17 +37,29 @@ from .training_layout import WORLD_ORIGINS
 @dataclass(frozen=True)
 class EvaluationDefaults:
     checkpoint: Path | None = None
-    episodes: int = 10
-    max_steps: int = 800
+    # 30 per map over the six arenas: 180 deterministic episodes, enough that a
+    # per-map rate is worth reading instead of the 12-episode in-training eval.
+    episodes: int = 30
+    # Matches TrainingDefaults.eval_max_steps, so a long route is not scored as
+    # a failure just because the evaluator gave it less time than training did.
+    max_steps: int = 1400
     map_index: int | None = None
     backend: str = "gazebo"
     goal: tuple[float, float] | None = None
     goal_frame: str = "odom"
     # Cap the sampled geodesic route so evaluation measures the same scenario
-    # the policy was trained for. None evaluates at full map difficulty.
-    max_goal_distance: float | None = 10.0
+    # the policy was trained for. None evaluates at full map difficulty, which
+    # is what training now uses: every arena is clipped to its own perimeter
+    # walls, so the arena already bounds the route and a 10 m cap would score
+    # the policy on easier goals than it ever trained on.
+    max_goal_distance: float | None = None
+    # Deliberately not TrainingDefaults.seed (42): these are goals the policy
+    # never saw during training.
     seed: int = 123
     device: str = "auto"
+    # None writes eval_extensive.csv next to the checkpoint being evaluated, so
+    # the per-episode rows stay with the run that produced them. Set a path to
+    # send them somewhere else.
     csv: Path | None = None
 
 
@@ -399,9 +411,12 @@ def evaluate(args: EvaluationDefaults) -> list[dict[str, Any]]:
         env.close()
 
     print_summary(rows, args.checkpoint)
-    if args.csv is not None:
-        write_csv(args.csv, rows)
-        print(f"\nCSV: {args.csv.expanduser().resolve()}")
+    csv_path = args.csv
+    if csv_path is None:
+        checkpoint = args.checkpoint.expanduser().resolve()
+        csv_path = checkpoint.parent / "eval_extensive.csv"
+    write_csv(csv_path, rows)
+    print(f"\nCSV: {csv_path.expanduser().resolve()}")
     return rows
 
 

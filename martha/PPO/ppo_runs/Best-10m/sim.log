@@ -1,0 +1,27 @@
+[INFO] [launch]: All log files can be found below /home/ros/.ros/log/2026-09-08-00-19-08-273657-predator-phn-1671-17876
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [gzserver-1]: process started with pid [17879]
+[INFO] [robot_state_publisher-2]: process started with pid [17881]
+[INFO] [ekf_node-3]: process started with pid [17883]
+[INFO] [spawn_entity.py-4]: process started with pid [17885]
+[robot_state_publisher-2] [WARN] [1788826748.611180680] [kdl_parser]: The root link base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.
+[robot_state_publisher-2] [INFO] [1788826748.611231325] [robot_state_publisher]: got segment base_link
+[robot_state_publisher-2] [INFO] [1788826748.611274801] [robot_state_publisher]: got segment front_left_wheel
+[robot_state_publisher-2] [INFO] [1788826748.611277698] [robot_state_publisher]: got segment front_right_wheel
+[robot_state_publisher-2] [INFO] [1788826748.611279891] [robot_state_publisher]: got segment imu_link
+[robot_state_publisher-2] [INFO] [1788826748.611281823] [robot_state_publisher]: got segment lidar
+[robot_state_publisher-2] [INFO] [1788826748.611283737] [robot_state_publisher]: got segment rear_left_wheel
+[robot_state_publisher-2] [INFO] [1788826748.611285689] [robot_state_publisher]: got segment rear_right_wheel
+[spawn_entity.py-4] [INFO] [1788826748.800498280] [urdf_spawner_robot]: Spawn Entity started
+[spawn_entity.py-4] [INFO] [1788826748.800697859] [urdf_spawner_robot]: Loading entity published on topic /robot_description
+[spawn_entity.py-4] [INFO] [1788826748.801824002] [urdf_spawner_robot]: Waiting for entity xml on /robot_description
+[spawn_entity.py-4] [INFO] [1788826748.812830871] [urdf_spawner_robot]: Waiting for service /spawn_entity, timeout = 30
+[spawn_entity.py-4] [INFO] [1788826748.812992727] [urdf_spawner_robot]: Waiting for service /spawn_entity
+[spawn_entity.py-4] [INFO] [1788826749.315352819] [urdf_spawner_robot]: Calling service /spawn_entity
+[gzserver-1] [INFO] [1788826749.408552696] [gazebo.gazebo_ros_state]: Publishing states of gazebo models at [/gazebo/model_states]
+[gzserver-1] [INFO] [1788826749.409204321] [gazebo.gazebo_ros_state]: Publishing states of gazebo links at [/gazebo/link_states]
+[gzserver-1] [INFO] [1788826749.458166585] [gazebo_ros_bumper_]: Publishing contact states to [/contacts]
+[spawn_entity.py-4] [INFO] [1788826749.479495365] [urdf_spawner_robot]: Spawn status: SpawnEntity: Successfully spawned entity [robot]
+[gzserver-1] [INFO] [1788826749.588413373] [gazebo_ros_planar_move_]: Subscribed to [/cmd_vel]
+[gzserver-1] [INFO] [1788826749.589441786] [gazebo_ros_planar_move_]: Advertise odometry on [/mecanum_drive_controller/odometry]
+[INFO] [spawn_entity.py-4]: process has finished cleanly [pid 17885]

@@ -1,0 +1,572 @@
+[INFO] [launch]: All log files can be found below /home/ros/.ros/log/2026-08-17-15-34-07-120746-predator-phn-1671-1770
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [gzserver-1]: process started with pid [1822]
+[INFO] [robot_state_publisher-2]: process started with pid [1826]
+[INFO] [spawn_entity.py-3]: process started with pid [1829]
+[INFO] [cmd_vel_to_twist_stamped-4]: process started with pid [1835]
+[INFO] [ekf_node-5]: process started with pid [1839]
+[robot_state_publisher-2] [WARN] [1786980847.470250155] [kdl_parser]: The root link base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.
+[robot_state_publisher-2] [INFO] [1786980847.470423412] [robot_state_publisher]: got segment base_link
+[robot_state_publisher-2] [INFO] [1786980847.470492145] [robot_state_publisher]: got segment front_left_roller_0
+[robot_state_publisher-2] [INFO] [1786980847.470502098] [robot_state_publisher]: got segment front_left_roller_1
+[robot_state_publisher-2] [INFO] [1786980847.470508860] [robot_state_publisher]: got segment front_left_roller_10
+[robot_state_publisher-2] [INFO] [1786980847.470515610] [robot_state_publisher]: got segment front_left_roller_11
+[robot_state_publisher-2] [INFO] [1786980847.470522005] [robot_state_publisher]: got segment front_left_roller_2
+[robot_state_publisher-2] [INFO] [1786980847.470528131] [robot_state_publisher]: got segment front_left_roller_3
+[robot_state_publisher-2] [INFO] [1786980847.470534381] [robot_state_publisher]: got segment front_left_roller_4
+[robot_state_publisher-2] [INFO] [1786980847.470540482] [robot_state_publisher]: got segment front_left_roller_5
+[robot_state_publisher-2] [INFO] [1786980847.470546644] [robot_state_publisher]: got segment front_left_roller_6
+[robot_state_publisher-2] [INFO] [1786980847.470552724] [robot_state_publisher]: got segment front_left_roller_7
+[robot_state_publisher-2] [INFO] [1786980847.470558785] [robot_state_publisher]: got segment front_left_roller_8
+[robot_state_publisher-2] [INFO] [1786980847.470564840] [robot_state_publisher]: got segment front_left_roller_9
+[robot_state_publisher-2] [INFO] [1786980847.470570891] [robot_state_publisher]: got segment front_left_wheel
+[robot_state_publisher-2] [INFO] [1786980847.470576944] [robot_state_publisher]: got segment front_right_roller_0
+[robot_state_publisher-2] [INFO] [1786980847.470583047] [robot_state_publisher]: got segment front_right_roller_1
+[robot_state_publisher-2] [INFO] [1786980847.470589074] [robot_state_publisher]: got segment front_right_roller_10
+[robot_state_publisher-2] [INFO] [1786980847.470595332] [robot_state_publisher]: got segment front_right_roller_11
+[robot_state_publisher-2] [INFO] [1786980847.470601620] [robot_state_publisher]: got segment front_right_roller_2
+[robot_state_publisher-2] [INFO] [1786980847.470607611] [robot_state_publisher]: got segment front_right_roller_3
+[robot_state_publisher-2] [INFO] [1786980847.470613720] [robot_state_publisher]: got segment front_right_roller_4
+[robot_state_publisher-2] [INFO] [1786980847.470619648] [robot_state_publisher]: got segment front_right_roller_5
+[robot_state_publisher-2] [INFO] [1786980847.470625733] [robot_state_publisher]: got segment front_right_roller_6
+[robot_state_publisher-2] [INFO] [1786980847.470631836] [robot_state_publisher]: got segment front_right_roller_7
+[robot_state_publisher-2] [INFO] [1786980847.470637906] [robot_state_publisher]: got segment front_right_roller_8
+[robot_state_publisher-2] [INFO] [1786980847.470644081] [robot_state_publisher]: got segment front_right_roller_9
+[robot_state_publisher-2] [INFO] [1786980847.470650185] [robot_state_publisher]: got segment front_right_wheel
+[robot_state_publisher-2] [INFO] [1786980847.470656344] [robot_state_publisher]: got segment imu_link
+[robot_state_publisher-2] [INFO] [1786980847.470662609] [robot_state_publisher]: got segment lidar
+[robot_state_publisher-2] [INFO] [1786980847.470668828] [robot_state_publisher]: got segment rear_left_roller_0
+[robot_state_publisher-2] [INFO] [1786980847.470675107] [robot_state_publisher]: got segment rear_left_roller_1
+[robot_state_publisher-2] [INFO] [1786980847.470681155] [robot_state_publisher]: got segment rear_left_roller_10
+[robot_state_publisher-2] [INFO] [1786980847.470687424] [robot_state_publisher]: got segment rear_left_roller_11
+[robot_state_publisher-2] [INFO] [1786980847.470693530] [robot_state_publisher]: got segment rear_left_roller_2
+[robot_state_publisher-2] [INFO] [1786980847.470700031] [robot_state_publisher]: got segment rear_left_roller_3
+[robot_state_publisher-2] [INFO] [1786980847.470706065] [robot_state_publisher]: got segment rear_left_roller_4
+[robot_state_publisher-2] [INFO] [1786980847.470712171] [robot_state_publisher]: got segment rear_left_roller_5
+[robot_state_publisher-2] [INFO] [1786980847.470718415] [robot_state_publisher]: got segment rear_left_roller_6
+[robot_state_publisher-2] [INFO] [1786980847.470724485] [robot_state_publisher]: got segment rear_left_roller_7
+[robot_state_publisher-2] [INFO] [1786980847.470730632] [robot_state_publisher]: got segment rear_left_roller_8
+[robot_state_publisher-2] [INFO] [1786980847.470736831] [robot_state_publisher]: got segment rear_left_roller_9
+[robot_state_publisher-2] [INFO] [1786980847.470744083] [robot_state_publisher]: got segment rear_left_wheel
+[robot_state_publisher-2] [INFO] [1786980847.470750498] [robot_state_publisher]: got segment rear_right_roller_0
+[robot_state_publisher-2] [INFO] [1786980847.470756576] [robot_state_publisher]: got segment rear_right_roller_1
+[robot_state_publisher-2] [INFO] [1786980847.470762654] [robot_state_publisher]: got segment rear_right_roller_10
+[robot_state_publisher-2] [INFO] [1786980847.470781907] [robot_state_publisher]: got segment rear_right_roller_11
+[robot_state_publisher-2] [INFO] [1786980847.470790269] [robot_state_publisher]: got segment rear_right_roller_2
+[robot_state_publisher-2] [INFO] [1786980847.470796734] [robot_state_publisher]: got segment rear_right_roller_3
+[robot_state_publisher-2] [INFO] [1786980847.470803012] [robot_state_publisher]: got segment rear_right_roller_4
+[robot_state_publisher-2] [INFO] [1786980847.470809243] [robot_state_publisher]: got segment rear_right_roller_5
+[robot_state_publisher-2] [INFO] [1786980847.470815523] [robot_state_publisher]: got segment rear_right_roller_6
+[robot_state_publisher-2] [INFO] [1786980847.470821764] [robot_state_publisher]: got segment rear_right_roller_7
+[robot_state_publisher-2] [INFO] [1786980847.470827777] [robot_state_publisher]: got segment rear_right_roller_8
+[robot_state_publisher-2] [INFO] [1786980847.470833836] [robot_state_publisher]: got segment rear_right_roller_9
+[robot_state_publisher-2] [INFO] [1786980847.470839899] [robot_state_publisher]: got segment rear_right_wheel
+[spawn_entity.py-3] [INFO] [1786980847.664296090] [urdf_spawner]: Spawn Entity started
+[spawn_entity.py-3] [INFO] [1786980847.664535288] [urdf_spawner]: Loading entity published on topic /robot_description
+[spawn_entity.py-3] [INFO] [1786980847.665738625] [urdf_spawner]: Waiting for entity xml on /robot_description
+[spawn_entity.py-3] [INFO] [1786980847.677131781] [urdf_spawner]: Waiting for service /spawn_entity, timeout = 30
+[spawn_entity.py-3] [INFO] [1786980847.677283749] [urdf_spawner]: Waiting for service /spawn_entity
+[gzserver-1] [INFO] [1786980848.581891939] [gazebo.gazebo_ros_state]: Publishing states of gazebo models at [/gazebo/model_states]
+[gzserver-1] [INFO] [1786980848.582711561] [gazebo.gazebo_ros_state]: Publishing states of gazebo links at [/gazebo/link_states]
+[spawn_entity.py-3] [INFO] [1786980848.680129400] [urdf_spawner]: Calling service /spawn_entity
+[spawn_entity.py-3] [INFO] [1786980849.182996404] [urdf_spawner]: Spawn status: SpawnEntity: Successfully spawned entity [robot]
+[spawn_entity.py-3] [INFO] [1786980849.184698532] [urdf_spawner]: Calling service /unpause_physics
+[gzserver-1] [INFO] [1786980849.192638346] [gazebo_ros2_control]: Loading gazebo_ros2_control plugin
+[gzserver-1] [INFO] [1786980849.195330921] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in namespace: /
+[gzserver-1] [INFO] [1786980849.195359717] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in ros 2 node: gazebo_ros2_control
+[gzserver-1] [INFO] [1786980849.197971439] [gazebo_ros2_control]: connected to service!! robot_state_publisher
+[gzserver-1] [INFO] [1786980849.198447353] [gazebo_ros2_control]: Received urdf from param server, parsing...
+[gzserver-1] [INFO] [1786980849.198470106] [gazebo_ros2_control]: Loading parameter files /home/ros/ros2_ws/install/martha/share/martha/config/controllers.yaml
+[gzserver-1] [INFO] [1786980849.204963255] [gazebo_ros2_control]: Loading joint: base_front_right_wheel_joint
+[gzserver-1] [INFO] [1786980849.204988269] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1786980849.204993469] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1786980849.204997267] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1786980849.205000326] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1786980849.205032939] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1786980849.205111370] [gazebo_ros2_control]: Loading joint: base_front_left_wheel_joint
+[gzserver-1] [INFO] [1786980849.205115742] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1786980849.205118783] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1786980849.205121949] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1786980849.205124725] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1786980849.205142146] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1786980849.205223962] [gazebo_ros2_control]: Loading joint: base_rear_left_wheel_joint
+[gzserver-1] [INFO] [1786980849.205227385] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1786980849.205230208] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1786980849.205232898] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1786980849.205235682] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1786980849.205252651] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1786980849.205290007] [gazebo_ros2_control]: Loading joint: base_rear_right_wheel_joint
+[gzserver-1] [INFO] [1786980849.205293475] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1786980849.205296126] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1786980849.205298721] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1786980849.205301277] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1786980849.205318229] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1786980849.205368798] [resource_manager]: Initialize hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1786980849.205440994] [resource_manager]: Successful initialization of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1786980849.205481846] [resource_manager]: 'configure' hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1786980849.205486487] [resource_manager]: Successful 'configure' of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1786980849.205500840] [resource_manager]: 'activate' hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1786980849.205504980] [resource_manager]: Successful 'activate' of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1786980849.205545338] [gazebo_ros2_control]: Loading controller_manager
+[gzserver-1] [WARN] [1786980849.214107090] [gazebo_ros2_control]:  Desired controller update period (0.01 s) is slower than the gazebo simulation period (0.001 s).
+[gzserver-1] [INFO] [1786980849.214255973] [gazebo_ros2_control]: Loaded gazebo_ros2_control.
+[INFO] [spawn_entity.py-3]: process has finished cleanly [pid 1829]
+[INFO] [spawner-6]: process started with pid [2553]
+[INFO] [spawner-7]: process started with pid [2555]
+[gzserver-1] [INFO] [1786980849.501384947] [controller_manager]: Loading controller 'joint_state_broadcaster'
+[gzserver-1] [INFO] [1786980852.224708199] [controller_manager]: Loading controller 'mecanum_drive_controller'
+[spawner-6] [INFO] [1786980852.232932406] [spawner_joint_state_broadcaster]: [94mLoaded [1mjoint_state_broadcaster[0m
+[gzserver-1] [INFO] [1786980854.174467363] [controller_manager]: Configuring controller 'joint_state_broadcaster'
+[gzserver-1] [INFO] [1786980854.174688352] [joint_state_broadcaster]: 'joints' or 'interfaces' parameter is empty. All available state interfaces will be published
+[spawner-7] [INFO] [1786980854.182457298] [spawner_mecanum_drive_controller]: [94mLoaded [1mmecanum_drive_controller[0m
+[gzserver-1] [INFO] [1786980854.186604771] [controller_manager]: Configuring controller 'mecanum_drive_controller'
+[spawner-6] [INFO] [1786980854.187254148] [spawner_joint_state_broadcaster]: [92mConfigured and activated [1mjoint_state_broadcaster[0m
+[gzserver-1] [INFO] [1786980854.190062188] [mecanum_drive_controller]: MecanumDriveController configured successfully
+[spawner-7] [INFO] [1786980854.200638090] [spawner_mecanum_drive_controller]: [92mConfigured and activated [1mmecanum_drive_controller[0m
+[INFO] [spawner-6]: process has finished cleanly [pid 2553]
+[INFO] [spawner-7]: process has finished cleanly [pid 2555]
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[robot_state_publisher-2] [INFO] [1787001066.342047088] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[ekf_node-5] [INFO] [1787001066.342047961] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[cmd_vel_to_twist_stamped-4] Traceback (most recent call last):
+[cmd_vel_to_twist_stamped-4]   File "/home/ros/ros2_ws/install/martha/lib/martha/cmd_vel_to_twist_stamped", line 33, in <module>
+[cmd_vel_to_twist_stamped-4]     sys.exit(load_entry_point('martha==0.0.0', 'console_scripts', 'cmd_vel_to_twist_stamped')())
+[cmd_vel_to_twist_stamped-4]   File "/home/ros/ros2_ws/install/martha/lib/python3.10/site-packages/martha/cmd_vel_to_twist_stamped.py", line 43, in main
+[cmd_vel_to_twist_stamped-4]     rclpy.shutdown()
+[cmd_vel_to_twist_stamped-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py", line 130, in shutdown
+[cmd_vel_to_twist_stamped-4]     _shutdown(context=context)
+[cmd_vel_to_twist_stamped-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/utilities.py", line 58, in shutdown
+[cmd_vel_to_twist_stamped-4]     return context.shutdown()
+[cmd_vel_to_twist_stamped-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/context.py", line 102, in shutdown
+[cmd_vel_to_twist_stamped-4]     self.__context.shutdown()
+[cmd_vel_to_twist_stamped-4] rclpy._rclpy_pybind11.RCLError: failed to shutdown: rcl_shutdown already called on the given context, at ./src/rcl/init.c:241
+[INFO] [ekf_node-5]: process has finished cleanly [pid 1839]
+[INFO] [robot_state_publisher-2]: process has finished cleanly [pid 1826]
+[ERROR] [cmd_vel_to_twist_stamped-4]: process has died [pid 1835, exit code 1, cmd '/home/ros/ros2_ws/install/martha/lib/martha/cmd_vel_to_twist_stamped --ros-args -r __node:=cmd_vel_to_twist_stamped --params-file /tmp/launch_params_4ymu_5u7'].
+[ERROR] [gzserver-1]: process[gzserver-1] failed to terminate '5' seconds after receiving 'SIGINT', escalating to 'SIGTERM'
+[INFO] [gzserver-1]: sending signal 'SIGTERM' to process[gzserver-1]
+[gzserver-1] [INFO] [1787001071.359682539] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[INFO] [launch]: All log files can be found below /home/ros/.ros/log/2026-08-17-21-38-28-863589-predator-phn-1671-181
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [gzserver-1]: process started with pid [232]
+[INFO] [robot_state_publisher-2]: process started with pid [240]
+[INFO] [spawn_entity.py-3]: process started with pid [247]
+[INFO] [cmd_vel_to_twist_stamped-4]: process started with pid [258]
+[INFO] [ekf_node-5]: process started with pid [267]
+[robot_state_publisher-2] [WARN] [1787002709.249932474] [kdl_parser]: The root link base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.
+[robot_state_publisher-2] [INFO] [1787002709.251305823] [robot_state_publisher]: got segment base_link
+[robot_state_publisher-2] [INFO] [1787002709.251399567] [robot_state_publisher]: got segment front_left_roller_0
+[robot_state_publisher-2] [INFO] [1787002709.251410874] [robot_state_publisher]: got segment front_left_roller_1
+[robot_state_publisher-2] [INFO] [1787002709.251419139] [robot_state_publisher]: got segment front_left_roller_10
+[robot_state_publisher-2] [INFO] [1787002709.251427219] [robot_state_publisher]: got segment front_left_roller_11
+[robot_state_publisher-2] [INFO] [1787002709.251434825] [robot_state_publisher]: got segment front_left_roller_2
+[robot_state_publisher-2] [INFO] [1787002709.251442086] [robot_state_publisher]: got segment front_left_roller_3
+[robot_state_publisher-2] [INFO] [1787002709.251449245] [robot_state_publisher]: got segment front_left_roller_4
+[robot_state_publisher-2] [INFO] [1787002709.251456652] [robot_state_publisher]: got segment front_left_roller_5
+[robot_state_publisher-2] [INFO] [1787002709.251463629] [robot_state_publisher]: got segment front_left_roller_6
+[robot_state_publisher-2] [INFO] [1787002709.251472193] [robot_state_publisher]: got segment front_left_roller_7
+[robot_state_publisher-2] [INFO] [1787002709.251478868] [robot_state_publisher]: got segment front_left_roller_8
+[robot_state_publisher-2] [INFO] [1787002709.251485686] [robot_state_publisher]: got segment front_left_roller_9
+[robot_state_publisher-2] [INFO] [1787002709.251492469] [robot_state_publisher]: got segment front_left_wheel
+[robot_state_publisher-2] [INFO] [1787002709.251498754] [robot_state_publisher]: got segment front_right_roller_0
+[robot_state_publisher-2] [INFO] [1787002709.251504967] [robot_state_publisher]: got segment front_right_roller_1
+[robot_state_publisher-2] [INFO] [1787002709.251511408] [robot_state_publisher]: got segment front_right_roller_10
+[robot_state_publisher-2] [INFO] [1787002709.251517945] [robot_state_publisher]: got segment front_right_roller_11
+[robot_state_publisher-2] [INFO] [1787002709.251525075] [robot_state_publisher]: got segment front_right_roller_2
+[robot_state_publisher-2] [INFO] [1787002709.251531106] [robot_state_publisher]: got segment front_right_roller_3
+[robot_state_publisher-2] [INFO] [1787002709.251536995] [robot_state_publisher]: got segment front_right_roller_4
+[robot_state_publisher-2] [INFO] [1787002709.251543062] [robot_state_publisher]: got segment front_right_roller_5
+[robot_state_publisher-2] [INFO] [1787002709.251549071] [robot_state_publisher]: got segment front_right_roller_6
+[robot_state_publisher-2] [INFO] [1787002709.251555027] [robot_state_publisher]: got segment front_right_roller_7
+[robot_state_publisher-2] [INFO] [1787002709.251561168] [robot_state_publisher]: got segment front_right_roller_8
+[robot_state_publisher-2] [INFO] [1787002709.251567106] [robot_state_publisher]: got segment front_right_roller_9
+[robot_state_publisher-2] [INFO] [1787002709.251572989] [robot_state_publisher]: got segment front_right_wheel
+[robot_state_publisher-2] [INFO] [1787002709.251579253] [robot_state_publisher]: got segment imu_link
+[robot_state_publisher-2] [INFO] [1787002709.251587282] [robot_state_publisher]: got segment lidar
+[robot_state_publisher-2] [INFO] [1787002709.251599797] [robot_state_publisher]: got segment rear_left_roller_0
+[robot_state_publisher-2] [INFO] [1787002709.251607008] [robot_state_publisher]: got segment rear_left_roller_1
+[robot_state_publisher-2] [INFO] [1787002709.251614447] [robot_state_publisher]: got segment rear_left_roller_10
+[robot_state_publisher-2] [INFO] [1787002709.251622143] [robot_state_publisher]: got segment rear_left_roller_11
+[robot_state_publisher-2] [INFO] [1787002709.251629846] [robot_state_publisher]: got segment rear_left_roller_2
+[robot_state_publisher-2] [INFO] [1787002709.251642686] [robot_state_publisher]: got segment rear_left_roller_3
+[robot_state_publisher-2] [INFO] [1787002709.251650938] [robot_state_publisher]: got segment rear_left_roller_4
+[robot_state_publisher-2] [INFO] [1787002709.251658916] [robot_state_publisher]: got segment rear_left_roller_5
+[robot_state_publisher-2] [INFO] [1787002709.251666274] [robot_state_publisher]: got segment rear_left_roller_6
+[robot_state_publisher-2] [INFO] [1787002709.251672880] [robot_state_publisher]: got segment rear_left_roller_7
+[robot_state_publisher-2] [INFO] [1787002709.251680757] [robot_state_publisher]: got segment rear_left_roller_8
+[robot_state_publisher-2] [INFO] [1787002709.251688578] [robot_state_publisher]: got segment rear_left_roller_9
+[robot_state_publisher-2] [INFO] [1787002709.251695218] [robot_state_publisher]: got segment rear_left_wheel
+[robot_state_publisher-2] [INFO] [1787002709.251705614] [robot_state_publisher]: got segment rear_right_roller_0
+[robot_state_publisher-2] [INFO] [1787002709.251714523] [robot_state_publisher]: got segment rear_right_roller_1
+[robot_state_publisher-2] [INFO] [1787002709.251722668] [robot_state_publisher]: got segment rear_right_roller_10
+[robot_state_publisher-2] [INFO] [1787002709.251751600] [robot_state_publisher]: got segment rear_right_roller_11
+[robot_state_publisher-2] [INFO] [1787002709.251768133] [robot_state_publisher]: got segment rear_right_roller_2
+[robot_state_publisher-2] [INFO] [1787002709.251776855] [robot_state_publisher]: got segment rear_right_roller_3
+[robot_state_publisher-2] [INFO] [1787002709.251785822] [robot_state_publisher]: got segment rear_right_roller_4
+[robot_state_publisher-2] [INFO] [1787002709.251793625] [robot_state_publisher]: got segment rear_right_roller_5
+[robot_state_publisher-2] [INFO] [1787002709.251801755] [robot_state_publisher]: got segment rear_right_roller_6
+[robot_state_publisher-2] [INFO] [1787002709.251809952] [robot_state_publisher]: got segment rear_right_roller_7
+[robot_state_publisher-2] [INFO] [1787002709.251817356] [robot_state_publisher]: got segment rear_right_roller_8
+[robot_state_publisher-2] [INFO] [1787002709.251824202] [robot_state_publisher]: got segment rear_right_roller_9
+[robot_state_publisher-2] [INFO] [1787002709.251831066] [robot_state_publisher]: got segment rear_right_wheel
+[spawn_entity.py-3] [INFO] [1787002709.518958087] [urdf_spawner]: Spawn Entity started
+[spawn_entity.py-3] [INFO] [1787002709.519713655] [urdf_spawner]: Loading entity published on topic /robot_description
+[spawn_entity.py-3] [INFO] [1787002709.520694165] [urdf_spawner]: Waiting for entity xml on /robot_description
+[spawn_entity.py-3] [INFO] [1787002709.533099337] [urdf_spawner]: Waiting for service /spawn_entity, timeout = 30
+[spawn_entity.py-3] [INFO] [1787002709.533293638] [urdf_spawner]: Waiting for service /spawn_entity
+[spawn_entity.py-3] [INFO] [1787002713.039629853] [urdf_spawner]: Calling service /spawn_entity
+[gzserver-1] [INFO] [1787002713.088986646] [gazebo.gazebo_ros_state]: Publishing states of gazebo models at [/gazebo/model_states]
+[gzserver-1] [INFO] [1787002713.089608633] [gazebo.gazebo_ros_state]: Publishing states of gazebo links at [/gazebo/link_states]
+[spawn_entity.py-3] [INFO] [1787002713.622364642] [urdf_spawner]: Spawn status: SpawnEntity: Successfully spawned entity [robot]
+[spawn_entity.py-3] [INFO] [1787002713.623449588] [urdf_spawner]: Calling service /unpause_physics
+[gzserver-1] [INFO] [1787002713.639491787] [gazebo_ros2_control]: Loading gazebo_ros2_control plugin
+[gzserver-1] [INFO] [1787002713.645098437] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in namespace: /
+[gzserver-1] [INFO] [1787002713.645146786] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in ros 2 node: gazebo_ros2_control
+[gzserver-1] [INFO] [1787002713.647947815] [gazebo_ros2_control]: connected to service!! robot_state_publisher
+[gzserver-1] [INFO] [1787002713.648531389] [gazebo_ros2_control]: Received urdf from param server, parsing...
+[gzserver-1] [INFO] [1787002713.648557671] [gazebo_ros2_control]: Loading parameter files /home/ros/ros2_ws/install/martha/share/martha/config/controllers.yaml
+[gzserver-1] [INFO] [1787002713.657568684] [gazebo_ros2_control]: Loading joint: base_front_right_wheel_joint
+[gzserver-1] [INFO] [1787002713.657605312] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1787002713.657617503] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787002713.657628742] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1787002713.657645757] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1787002713.657689659] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787002713.657927117] [gazebo_ros2_control]: Loading joint: base_front_left_wheel_joint
+[gzserver-1] [INFO] [1787002713.657953254] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1787002713.657964054] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787002713.657974332] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1787002713.657983572] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1787002713.658019224] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787002713.658127870] [gazebo_ros2_control]: Loading joint: base_rear_left_wheel_joint
+[gzserver-1] [INFO] [1787002713.658140504] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1787002713.658149243] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787002713.658158163] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1787002713.658166356] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1787002713.658198816] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787002713.658297175] [gazebo_ros2_control]: Loading joint: base_rear_right_wheel_joint
+[gzserver-1] [INFO] [1787002713.658309377] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1787002713.658318031] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787002713.658326708] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1787002713.658334930] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1787002713.658366714] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787002713.658509100] [resource_manager]: Initialize hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1787002713.658663524] [resource_manager]: Successful initialization of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1787002713.658745923] [resource_manager]: 'configure' hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1787002713.658755740] [resource_manager]: Successful 'configure' of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1787002713.658763472] [resource_manager]: 'activate' hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1787002713.658769639] [resource_manager]: Successful 'activate' of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1787002713.658830989] [gazebo_ros2_control]: Loading controller_manager
+[gzserver-1] [WARN] [1787002713.672990606] [gazebo_ros2_control]:  Desired controller update period (0.01 s) is slower than the gazebo simulation period (0.001 s).
+[gzserver-1] [INFO] [1787002713.673187687] [gazebo_ros2_control]: Loaded gazebo_ros2_control.
+[INFO] [spawn_entity.py-3]: process has finished cleanly [pid 247]
+[INFO] [spawner-6]: process started with pid [1162]
+[INFO] [spawner-7]: process started with pid [1164]
+[gzserver-1] [INFO] [1787002713.952077591] [controller_manager]: Loading controller 'joint_state_broadcaster'
+[spawner-6] [INFO] [1787002713.981742499] [spawner_joint_state_broadcaster]: [94mLoaded [1mjoint_state_broadcaster[0m
+[gzserver-1] [INFO] [1787002713.982869687] [controller_manager]: Configuring controller 'joint_state_broadcaster'
+[gzserver-1] [INFO] [1787002713.983202820] [joint_state_broadcaster]: 'joints' or 'interfaces' parameter is empty. All available state interfaces will be published
+[spawner-6] [INFO] [1787002713.995860605] [spawner_joint_state_broadcaster]: [92mConfigured and activated [1mjoint_state_broadcaster[0m
+[spawner-7] [INFO] [1787002714.066178059] [spawner_mecanum_drive_controller]: waiting for service /controller_manager/list_controllers to become available...
+[INFO] [spawner-6]: process has finished cleanly [pid 1162]
+[gzserver-1] [INFO] [1787002714.318206965] [controller_manager]: Loading controller 'mecanum_drive_controller'
+[spawner-7] [INFO] [1787002714.330751181] [spawner_mecanum_drive_controller]: [94mLoaded [1mmecanum_drive_controller[0m
+[gzserver-1] [INFO] [1787002714.331468569] [controller_manager]: Configuring controller 'mecanum_drive_controller'
+[gzserver-1] [INFO] [1787002714.336803707] [mecanum_drive_controller]: MecanumDriveController configured successfully
+[spawner-7] [INFO] [1787002714.347819216] [spawner_mecanum_drive_controller]: [92mConfigured and activated [1mmecanum_drive_controller[0m
+[INFO] [spawner-7]: process has finished cleanly [pid 1164]
+[INFO] [launch]: All log files can be found below /home/ros/.ros/log/2026-08-17-22-09-00-645796-predator-phn-1671-179
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [gzserver-1]: process started with pid [258]
+[INFO] [robot_state_publisher-2]: process started with pid [260]
+[INFO] [spawn_entity.py-3]: process started with pid [262]
+[INFO] [cmd_vel_to_twist_stamped-4]: process started with pid [264]
+[INFO] [ekf_node-5]: process started with pid [266]
+[robot_state_publisher-2] [WARN] [1787004541.024502099] [kdl_parser]: The root link base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.
+[robot_state_publisher-2] [INFO] [1787004541.024608553] [robot_state_publisher]: got segment base_link
+[robot_state_publisher-2] [INFO] [1787004541.024652340] [robot_state_publisher]: got segment front_left_roller_0
+[robot_state_publisher-2] [INFO] [1787004541.024655697] [robot_state_publisher]: got segment front_left_roller_1
+[robot_state_publisher-2] [INFO] [1787004541.024657854] [robot_state_publisher]: got segment front_left_roller_10
+[robot_state_publisher-2] [INFO] [1787004541.024660126] [robot_state_publisher]: got segment front_left_roller_11
+[robot_state_publisher-2] [INFO] [1787004541.024662174] [robot_state_publisher]: got segment front_left_roller_2
+[robot_state_publisher-2] [INFO] [1787004541.024664258] [robot_state_publisher]: got segment front_left_roller_3
+[robot_state_publisher-2] [INFO] [1787004541.024666271] [robot_state_publisher]: got segment front_left_roller_4
+[robot_state_publisher-2] [INFO] [1787004541.024668259] [robot_state_publisher]: got segment front_left_roller_5
+[robot_state_publisher-2] [INFO] [1787004541.024670189] [robot_state_publisher]: got segment front_left_roller_6
+[robot_state_publisher-2] [INFO] [1787004541.024672217] [robot_state_publisher]: got segment front_left_roller_7
+[robot_state_publisher-2] [INFO] [1787004541.024674206] [robot_state_publisher]: got segment front_left_roller_8
+[robot_state_publisher-2] [INFO] [1787004541.024676249] [robot_state_publisher]: got segment front_left_roller_9
+[robot_state_publisher-2] [INFO] [1787004541.024678266] [robot_state_publisher]: got segment front_left_wheel
+[robot_state_publisher-2] [INFO] [1787004541.024680305] [robot_state_publisher]: got segment front_right_roller_0
+[robot_state_publisher-2] [INFO] [1787004541.024682421] [robot_state_publisher]: got segment front_right_roller_1
+[robot_state_publisher-2] [INFO] [1787004541.024684425] [robot_state_publisher]: got segment front_right_roller_10
+[robot_state_publisher-2] [INFO] [1787004541.024686501] [robot_state_publisher]: got segment front_right_roller_11
+[robot_state_publisher-2] [INFO] [1787004541.024688523] [robot_state_publisher]: got segment front_right_roller_2
+[robot_state_publisher-2] [INFO] [1787004541.024690556] [robot_state_publisher]: got segment front_right_roller_3
+[robot_state_publisher-2] [INFO] [1787004541.024692584] [robot_state_publisher]: got segment front_right_roller_4
+[robot_state_publisher-2] [INFO] [1787004541.024694557] [robot_state_publisher]: got segment front_right_roller_5
+[robot_state_publisher-2] [INFO] [1787004541.024696563] [robot_state_publisher]: got segment front_right_roller_6
+[robot_state_publisher-2] [INFO] [1787004541.024698520] [robot_state_publisher]: got segment front_right_roller_7
+[robot_state_publisher-2] [INFO] [1787004541.024700599] [robot_state_publisher]: got segment front_right_roller_8
+[robot_state_publisher-2] [INFO] [1787004541.024702658] [robot_state_publisher]: got segment front_right_roller_9
+[robot_state_publisher-2] [INFO] [1787004541.024706786] [robot_state_publisher]: got segment front_right_wheel
+[robot_state_publisher-2] [INFO] [1787004541.024708846] [robot_state_publisher]: got segment imu_link
+[robot_state_publisher-2] [INFO] [1787004541.024716682] [robot_state_publisher]: got segment lidar
+[robot_state_publisher-2] [INFO] [1787004541.024718795] [robot_state_publisher]: got segment rear_left_roller_0
+[robot_state_publisher-2] [INFO] [1787004541.024720903] [robot_state_publisher]: got segment rear_left_roller_1
+[robot_state_publisher-2] [INFO] [1787004541.024722889] [robot_state_publisher]: got segment rear_left_roller_10
+[robot_state_publisher-2] [INFO] [1787004541.024724905] [robot_state_publisher]: got segment rear_left_roller_11
+[robot_state_publisher-2] [INFO] [1787004541.024726918] [robot_state_publisher]: got segment rear_left_roller_2
+[robot_state_publisher-2] [INFO] [1787004541.024728948] [robot_state_publisher]: got segment rear_left_roller_3
+[robot_state_publisher-2] [INFO] [1787004541.024730961] [robot_state_publisher]: got segment rear_left_roller_4
+[robot_state_publisher-2] [INFO] [1787004541.024732928] [robot_state_publisher]: got segment rear_left_roller_5
+[robot_state_publisher-2] [INFO] [1787004541.024734905] [robot_state_publisher]: got segment rear_left_roller_6
+[robot_state_publisher-2] [INFO] [1787004541.024736894] [robot_state_publisher]: got segment rear_left_roller_7
+[robot_state_publisher-2] [INFO] [1787004541.024738930] [robot_state_publisher]: got segment rear_left_roller_8
+[robot_state_publisher-2] [INFO] [1787004541.024740922] [robot_state_publisher]: got segment rear_left_roller_9
+[robot_state_publisher-2] [INFO] [1787004541.024742907] [robot_state_publisher]: got segment rear_left_wheel
+[robot_state_publisher-2] [INFO] [1787004541.024744921] [robot_state_publisher]: got segment rear_right_roller_0
+[robot_state_publisher-2] [INFO] [1787004541.024747053] [robot_state_publisher]: got segment rear_right_roller_1
+[robot_state_publisher-2] [INFO] [1787004541.024749068] [robot_state_publisher]: got segment rear_right_roller_10
+[robot_state_publisher-2] [INFO] [1787004541.024763915] [robot_state_publisher]: got segment rear_right_roller_11
+[robot_state_publisher-2] [INFO] [1787004541.024766124] [robot_state_publisher]: got segment rear_right_roller_2
+[robot_state_publisher-2] [INFO] [1787004541.024770155] [robot_state_publisher]: got segment rear_right_roller_3
+[robot_state_publisher-2] [INFO] [1787004541.024772202] [robot_state_publisher]: got segment rear_right_roller_4
+[robot_state_publisher-2] [INFO] [1787004541.024774266] [robot_state_publisher]: got segment rear_right_roller_5
+[robot_state_publisher-2] [INFO] [1787004541.024776298] [robot_state_publisher]: got segment rear_right_roller_6
+[robot_state_publisher-2] [INFO] [1787004541.024778303] [robot_state_publisher]: got segment rear_right_roller_7
+[robot_state_publisher-2] [INFO] [1787004541.024780315] [robot_state_publisher]: got segment rear_right_roller_8
+[robot_state_publisher-2] [INFO] [1787004541.024782334] [robot_state_publisher]: got segment rear_right_roller_9
+[robot_state_publisher-2] [INFO] [1787004541.024784358] [robot_state_publisher]: got segment rear_right_wheel
+[spawn_entity.py-3] [INFO] [1787004541.273156178] [urdf_spawner]: Spawn Entity started
+[spawn_entity.py-3] [INFO] [1787004541.273370562] [urdf_spawner]: Loading entity published on topic /robot_description
+[spawn_entity.py-3] [INFO] [1787004541.274385245] [urdf_spawner]: Waiting for entity xml on /robot_description
+[spawn_entity.py-3] [INFO] [1787004541.286897247] [urdf_spawner]: Waiting for service /spawn_entity, timeout = 30
+[spawn_entity.py-3] [INFO] [1787004541.287211820] [urdf_spawner]: Waiting for service /spawn_entity
+[gzserver-1] [INFO] [1787004541.888916854] [gazebo.gazebo_ros_state]: Publishing states of gazebo models at [/gazebo/model_states]
+[gzserver-1] [INFO] [1787004541.889299132] [gazebo.gazebo_ros_state]: Publishing states of gazebo links at [/gazebo/link_states]
+[spawn_entity.py-3] [INFO] [1787004542.040748108] [urdf_spawner]: Calling service /spawn_entity
+[spawn_entity.py-3] [INFO] [1787004542.560495875] [urdf_spawner]: Spawn status: SpawnEntity: Successfully spawned entity [robot]
+[spawn_entity.py-3] [INFO] [1787004542.561473559] [urdf_spawner]: Calling service /unpause_physics
+[gzserver-1] [INFO] [1787004542.570276901] [gazebo_ros2_control]: Loading gazebo_ros2_control plugin
+[gzserver-1] [INFO] [1787004542.572578167] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in namespace: /
+[gzserver-1] [INFO] [1787004542.572603079] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in ros 2 node: gazebo_ros2_control
+[gzserver-1] [INFO] [1787004542.575204446] [gazebo_ros2_control]: connected to service!! robot_state_publisher
+[gzserver-1] [INFO] [1787004542.575794361] [gazebo_ros2_control]: Received urdf from param server, parsing...
+[gzserver-1] [INFO] [1787004542.575829106] [gazebo_ros2_control]: Loading parameter files /home/ros/ros2_ws/install/martha/share/martha/config/controllers.yaml
+[gzserver-1] [INFO] [1787004542.582360672] [gazebo_ros2_control]: Loading joint: base_front_right_wheel_joint
+[gzserver-1] [INFO] [1787004542.582381126] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1787004542.582385967] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787004542.582389794] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1787004542.582393117] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1787004542.582427520] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787004542.582491991] [gazebo_ros2_control]: Loading joint: base_front_left_wheel_joint
+[gzserver-1] [INFO] [1787004542.582496175] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1787004542.582499057] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787004542.582502208] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1787004542.582504963] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1787004542.582523168] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787004542.582617108] [gazebo_ros2_control]: Loading joint: base_rear_left_wheel_joint
+[gzserver-1] [INFO] [1787004542.582646111] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1787004542.582657459] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787004542.582667106] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1787004542.582676635] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1787004542.582712595] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787004542.583065231] [gazebo_ros2_control]: Loading joint: base_rear_right_wheel_joint
+[gzserver-1] [INFO] [1787004542.583079715] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1787004542.583083969] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787004542.583087122] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1787004542.583089921] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1787004542.583112672] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787004542.583174594] [resource_manager]: Initialize hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1787004542.583247056] [resource_manager]: Successful initialization of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1787004542.583286472] [resource_manager]: 'configure' hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1787004542.583291171] [resource_manager]: Successful 'configure' of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1787004542.583294563] [resource_manager]: 'activate' hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1787004542.583297440] [resource_manager]: Successful 'activate' of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1787004542.583333956] [gazebo_ros2_control]: Loading controller_manager
+[gzserver-1] [WARN] [1787004542.591996227] [gazebo_ros2_control]:  Desired controller update period (0.01 s) is slower than the gazebo simulation period (0.001 s).
+[gzserver-1] [INFO] [1787004542.592126770] [gazebo_ros2_control]: Loaded gazebo_ros2_control.
+[INFO] [spawn_entity.py-3]: process has finished cleanly [pid 262]
+[INFO] [spawner-6]: process started with pid [1118]
+[INFO] [spawner-7]: process started with pid [1120]
+[gzserver-1] [INFO] [1787004542.864611560] [controller_manager]: Loading controller 'mecanum_drive_controller'
+[gzserver-1] [INFO] [1787004545.404347562] [controller_manager]: Loading controller 'joint_state_broadcaster'
+[spawner-7] [INFO] [1787004545.421458739] [spawner_mecanum_drive_controller]: [94mLoaded [1mmecanum_drive_controller[0m
+[gzserver-1] [INFO] [1787004546.908062495] [controller_manager]: Configuring controller 'mecanum_drive_controller'
+[gzserver-1] [INFO] [1787004546.914183788] [mecanum_drive_controller]: MecanumDriveController configured successfully
+[spawner-7] [INFO] [1787004546.922624824] [spawner_mecanum_drive_controller]: [92mConfigured and activated [1mmecanum_drive_controller[0m
+[spawner-6] [INFO] [1787004546.925701508] [spawner_joint_state_broadcaster]: [94mLoaded [1mjoint_state_broadcaster[0m
+[gzserver-1] [INFO] [1787004546.926792475] [controller_manager]: Configuring controller 'joint_state_broadcaster'
+[gzserver-1] [INFO] [1787004546.926884020] [joint_state_broadcaster]: 'joints' or 'interfaces' parameter is empty. All available state interfaces will be published
+[spawner-6] [INFO] [1787004546.941650696] [spawner_joint_state_broadcaster]: [92mConfigured and activated [1mjoint_state_broadcaster[0m
+[INFO] [spawner-7]: process has finished cleanly [pid 1120]
+[INFO] [spawner-6]: process has finished cleanly [pid 1118]
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[robot_state_publisher-2] [INFO] [1787018489.977797544] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[ekf_node-5] [INFO] [1787018489.977806353] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[cmd_vel_to_twist_stamped-4] Traceback (most recent call last):
+[cmd_vel_to_twist_stamped-4]   File "/home/ros/ros2_ws/install/martha/lib/martha/cmd_vel_to_twist_stamped", line 33, in <module>
+[cmd_vel_to_twist_stamped-4]     sys.exit(load_entry_point('martha==0.0.0', 'console_scripts', 'cmd_vel_to_twist_stamped')())
+[cmd_vel_to_twist_stamped-4]   File "/home/ros/ros2_ws/install/martha/lib/python3.10/site-packages/martha/cmd_vel_to_twist_stamped.py", line 43, in main
+[cmd_vel_to_twist_stamped-4]     rclpy.shutdown()
+[cmd_vel_to_twist_stamped-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py", line 130, in shutdown
+[cmd_vel_to_twist_stamped-4]     _shutdown(context=context)
+[cmd_vel_to_twist_stamped-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/utilities.py", line 58, in shutdown
+[cmd_vel_to_twist_stamped-4]     return context.shutdown()
+[cmd_vel_to_twist_stamped-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/context.py", line 102, in shutdown
+[cmd_vel_to_twist_stamped-4]     self.__context.shutdown()
+[cmd_vel_to_twist_stamped-4] rclpy._rclpy_pybind11.RCLError: failed to shutdown: rcl_shutdown already called on the given context, at ./src/rcl/init.c:241
+[INFO] [robot_state_publisher-2]: process has finished cleanly [pid 260]
+[INFO] [ekf_node-5]: process has finished cleanly [pid 266]
+[ERROR] [cmd_vel_to_twist_stamped-4]: process has died [pid 264, exit code 1, cmd '/home/ros/ros2_ws/install/martha/lib/martha/cmd_vel_to_twist_stamped --ros-args -r __node:=cmd_vel_to_twist_stamped --params-file /tmp/launch_params_lk7sbm9x'].
+[INFO] [gzserver-1]: process has finished cleanly [pid 258]
+[INFO] [launch]: All log files can be found below /home/ros/.ros/log/2026-08-18-03-24-23-006500-predator-phn-1671-180
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [gzserver-1]: process started with pid [229]
+[INFO] [robot_state_publisher-2]: process started with pid [231]
+[INFO] [spawn_entity.py-3]: process started with pid [235]
+[INFO] [cmd_vel_to_twist_stamped-4]: process started with pid [242]
+[INFO] [ekf_node-5]: process started with pid [246]
+[robot_state_publisher-2] [WARN] [1787023463.454291059] [kdl_parser]: The root link base_link has an inertia specified in the URDF, but KDL does not support a root link with an inertia.  As a workaround, you can add an extra dummy link to your URDF.
+[robot_state_publisher-2] [INFO] [1787023463.454512422] [robot_state_publisher]: got segment base_link
+[robot_state_publisher-2] [INFO] [1787023463.454574766] [robot_state_publisher]: got segment front_left_roller_0
+[robot_state_publisher-2] [INFO] [1787023463.454580368] [robot_state_publisher]: got segment front_left_roller_1
+[robot_state_publisher-2] [INFO] [1787023463.454584380] [robot_state_publisher]: got segment front_left_roller_10
+[robot_state_publisher-2] [INFO] [1787023463.454588657] [robot_state_publisher]: got segment front_left_roller_11
+[robot_state_publisher-2] [INFO] [1787023463.454592548] [robot_state_publisher]: got segment front_left_roller_2
+[robot_state_publisher-2] [INFO] [1787023463.454596681] [robot_state_publisher]: got segment front_left_roller_3
+[robot_state_publisher-2] [INFO] [1787023463.454600708] [robot_state_publisher]: got segment front_left_roller_4
+[robot_state_publisher-2] [INFO] [1787023463.454604785] [robot_state_publisher]: got segment front_left_roller_5
+[robot_state_publisher-2] [INFO] [1787023463.454608431] [robot_state_publisher]: got segment front_left_roller_6
+[robot_state_publisher-2] [INFO] [1787023463.454612182] [robot_state_publisher]: got segment front_left_roller_7
+[robot_state_publisher-2] [INFO] [1787023463.454615814] [robot_state_publisher]: got segment front_left_roller_8
+[robot_state_publisher-2] [INFO] [1787023463.454619132] [robot_state_publisher]: got segment front_left_roller_9
+[robot_state_publisher-2] [INFO] [1787023463.454622361] [robot_state_publisher]: got segment front_left_wheel
+[robot_state_publisher-2] [INFO] [1787023463.454625985] [robot_state_publisher]: got segment front_right_roller_0
+[robot_state_publisher-2] [INFO] [1787023463.454629890] [robot_state_publisher]: got segment front_right_roller_1
+[robot_state_publisher-2] [INFO] [1787023463.454633899] [robot_state_publisher]: got segment front_right_roller_10
+[robot_state_publisher-2] [INFO] [1787023463.454637891] [robot_state_publisher]: got segment front_right_roller_11
+[robot_state_publisher-2] [INFO] [1787023463.454641748] [robot_state_publisher]: got segment front_right_roller_2
+[robot_state_publisher-2] [INFO] [1787023463.454645646] [robot_state_publisher]: got segment front_right_roller_3
+[robot_state_publisher-2] [INFO] [1787023463.454649225] [robot_state_publisher]: got segment front_right_roller_4
+[robot_state_publisher-2] [INFO] [1787023463.454652520] [robot_state_publisher]: got segment front_right_roller_5
+[robot_state_publisher-2] [INFO] [1787023463.454656009] [robot_state_publisher]: got segment front_right_roller_6
+[robot_state_publisher-2] [INFO] [1787023463.454659556] [robot_state_publisher]: got segment front_right_roller_7
+[robot_state_publisher-2] [INFO] [1787023463.454662984] [robot_state_publisher]: got segment front_right_roller_8
+[robot_state_publisher-2] [INFO] [1787023463.454666254] [robot_state_publisher]: got segment front_right_roller_9
+[robot_state_publisher-2] [INFO] [1787023463.454670069] [robot_state_publisher]: got segment front_right_wheel
+[robot_state_publisher-2] [INFO] [1787023463.454673677] [robot_state_publisher]: got segment imu_link
+[robot_state_publisher-2] [INFO] [1787023463.454677690] [robot_state_publisher]: got segment lidar
+[robot_state_publisher-2] [INFO] [1787023463.454681819] [robot_state_publisher]: got segment rear_left_roller_0
+[robot_state_publisher-2] [INFO] [1787023463.454685942] [robot_state_publisher]: got segment rear_left_roller_1
+[robot_state_publisher-2] [INFO] [1787023463.454689508] [robot_state_publisher]: got segment rear_left_roller_10
+[robot_state_publisher-2] [INFO] [1787023463.454693253] [robot_state_publisher]: got segment rear_left_roller_11
+[robot_state_publisher-2] [INFO] [1787023463.454697036] [robot_state_publisher]: got segment rear_left_roller_2
+[robot_state_publisher-2] [INFO] [1787023463.454700486] [robot_state_publisher]: got segment rear_left_roller_3
+[robot_state_publisher-2] [INFO] [1787023463.454703870] [robot_state_publisher]: got segment rear_left_roller_4
+[robot_state_publisher-2] [INFO] [1787023463.454707151] [robot_state_publisher]: got segment rear_left_roller_5
+[robot_state_publisher-2] [INFO] [1787023463.454710804] [robot_state_publisher]: got segment rear_left_roller_6
+[robot_state_publisher-2] [INFO] [1787023463.454714804] [robot_state_publisher]: got segment rear_left_roller_7
+[robot_state_publisher-2] [INFO] [1787023463.454718460] [robot_state_publisher]: got segment rear_left_roller_8
+[robot_state_publisher-2] [INFO] [1787023463.454722385] [robot_state_publisher]: got segment rear_left_roller_9
+[robot_state_publisher-2] [INFO] [1787023463.454725868] [robot_state_publisher]: got segment rear_left_wheel
+[robot_state_publisher-2] [INFO] [1787023463.454729233] [robot_state_publisher]: got segment rear_right_roller_0
+[robot_state_publisher-2] [INFO] [1787023463.454732904] [robot_state_publisher]: got segment rear_right_roller_1
+[robot_state_publisher-2] [INFO] [1787023463.454736478] [robot_state_publisher]: got segment rear_right_roller_10
+[robot_state_publisher-2] [INFO] [1787023463.454757304] [robot_state_publisher]: got segment rear_right_roller_11
+[robot_state_publisher-2] [INFO] [1787023463.454761401] [robot_state_publisher]: got segment rear_right_roller_2
+[robot_state_publisher-2] [INFO] [1787023463.454765050] [robot_state_publisher]: got segment rear_right_roller_3
+[robot_state_publisher-2] [INFO] [1787023463.454768649] [robot_state_publisher]: got segment rear_right_roller_4
+[robot_state_publisher-2] [INFO] [1787023463.454772247] [robot_state_publisher]: got segment rear_right_roller_5
+[robot_state_publisher-2] [INFO] [1787023463.454776011] [robot_state_publisher]: got segment rear_right_roller_6
+[robot_state_publisher-2] [INFO] [1787023463.454779631] [robot_state_publisher]: got segment rear_right_roller_7
+[robot_state_publisher-2] [INFO] [1787023463.454783321] [robot_state_publisher]: got segment rear_right_roller_8
+[robot_state_publisher-2] [INFO] [1787023463.454786916] [robot_state_publisher]: got segment rear_right_roller_9
+[robot_state_publisher-2] [INFO] [1787023463.454790947] [robot_state_publisher]: got segment rear_right_wheel
+[spawn_entity.py-3] [INFO] [1787023463.704831137] [urdf_spawner]: Spawn Entity started
+[spawn_entity.py-3] [INFO] [1787023463.705067718] [urdf_spawner]: Loading entity published on topic /robot_description
+[spawn_entity.py-3] [INFO] [1787023463.706400048] [urdf_spawner]: Waiting for entity xml on /robot_description
+[spawn_entity.py-3] [INFO] [1787023463.718195799] [urdf_spawner]: Waiting for service /spawn_entity, timeout = 30
+[spawn_entity.py-3] [INFO] [1787023463.718391606] [urdf_spawner]: Waiting for service /spawn_entity
+[gzserver-1] Authorization required, but no authorization protocol specified
+[gzserver-1] [INFO] [1787023464.020511061] [gazebo.gazebo_ros_state]: Publishing states of gazebo models at [/gazebo/model_states]
+[gzserver-1] [INFO] [1787023464.020911051] [gazebo.gazebo_ros_state]: Publishing states of gazebo links at [/gazebo/link_states]
+[spawn_entity.py-3] [INFO] [1787023464.220953978] [urdf_spawner]: Calling service /spawn_entity
+[spawn_entity.py-3] [INFO] [1787023464.685280567] [urdf_spawner]: Spawn status: SpawnEntity: Successfully spawned entity [robot]
+[spawn_entity.py-3] [INFO] [1787023464.687061242] [urdf_spawner]: Calling service /unpause_physics
+[gzserver-1] [INFO] [1787023464.696705936] [gazebo_ros2_control]: Loading gazebo_ros2_control plugin
+[gzserver-1] [INFO] [1787023464.701284900] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in namespace: /
+[gzserver-1] [INFO] [1787023464.701330099] [gazebo_ros2_control]: Starting gazebo_ros2_control plugin in ros 2 node: gazebo_ros2_control
+[gzserver-1] [INFO] [1787023464.703765146] [gazebo_ros2_control]: connected to service!! robot_state_publisher
+[gzserver-1] [INFO] [1787023464.704380408] [gazebo_ros2_control]: Received urdf from param server, parsing...
+[gzserver-1] [INFO] [1787023464.704408343] [gazebo_ros2_control]: Loading parameter files /home/ros/ros2_ws/install/martha/share/martha/config/controllers.yaml
+[gzserver-1] [INFO] [1787023464.711462500] [gazebo_ros2_control]: Loading joint: base_front_right_wheel_joint
+[gzserver-1] [INFO] [1787023464.711493568] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1787023464.711498300] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787023464.711502710] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1787023464.711505756] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1787023464.711541151] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787023464.711632776] [gazebo_ros2_control]: Loading joint: base_front_left_wheel_joint
+[gzserver-1] [INFO] [1787023464.711638088] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1787023464.711641264] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787023464.711644344] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1787023464.711647039] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1787023464.711666182] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787023464.711709717] [gazebo_ros2_control]: Loading joint: base_rear_left_wheel_joint
+[gzserver-1] [INFO] [1787023464.711715787] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1787023464.711718876] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787023464.711721718] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1787023464.711727496] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1787023464.711750150] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787023464.711796058] [gazebo_ros2_control]: Loading joint: base_rear_right_wheel_joint
+[gzserver-1] [INFO] [1787023464.711799834] [gazebo_ros2_control]: 	State:
+[gzserver-1] [INFO] [1787023464.711802548] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787023464.711805629] [gazebo_ros2_control]: 		 position
+[gzserver-1] [INFO] [1787023464.711808272] [gazebo_ros2_control]: 	Command:
+[gzserver-1] [INFO] [1787023464.711826165] [gazebo_ros2_control]: 		 velocity
+[gzserver-1] [INFO] [1787023464.711888011] [resource_manager]: Initialize hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1787023464.711969886] [resource_manager]: Successful initialization of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1787023464.712015154] [resource_manager]: 'configure' hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1787023464.712020860] [resource_manager]: Successful 'configure' of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1787023464.712024629] [resource_manager]: 'activate' hardware 'GazeboSystem' 
+[gzserver-1] [INFO] [1787023464.712027809] [resource_manager]: Successful 'activate' of hardware 'GazeboSystem'
+[gzserver-1] [INFO] [1787023464.712070122] [gazebo_ros2_control]: Loading controller_manager
+[gzserver-1] [WARN] [1787023464.722471013] [gazebo_ros2_control]:  Desired controller update period (0.01 s) is slower than the gazebo simulation period (0.001 s).
+[gzserver-1] [INFO] [1787023464.722751257] [gazebo_ros2_control]: Loaded gazebo_ros2_control.
+[INFO] [spawn_entity.py-3]: process has finished cleanly [pid 235]
+[INFO] [spawner-6]: process started with pid [722]
+[INFO] [spawner-7]: process started with pid [724]
+[gzserver-1] [INFO] [1787023465.032846538] [controller_manager]: Loading controller 'mecanum_drive_controller'
+[spawner-6] [INFO] [1787023465.042180015] [spawner_joint_state_broadcaster]: waiting for service /controller_manager/list_controllers to become available...
+[gzserver-1] [INFO] [1787023467.532642292] [controller_manager]: Loading controller 'joint_state_broadcaster'
+[spawner-7] [INFO] [1787023467.541055825] [spawner_mecanum_drive_controller]: [94mLoaded [1mmecanum_drive_controller[0m
+[gzserver-1] [INFO] [1787023469.048246145] [controller_manager]: Configuring controller 'mecanum_drive_controller'
+[spawner-6] [INFO] [1787023469.048696411] [spawner_joint_state_broadcaster]: [94mLoaded [1mjoint_state_broadcaster[0m
+[gzserver-1] [INFO] [1787023469.054581599] [mecanum_drive_controller]: MecanumDriveController configured successfully
+[gzserver-1] [INFO] [1787023469.057104009] [controller_manager]: Configuring controller 'joint_state_broadcaster'
+[gzserver-1] [INFO] [1787023469.057155003] [joint_state_broadcaster]: 'joints' or 'interfaces' parameter is empty. All available state interfaces will be published
+[spawner-7] [INFO] [1787023469.068069981] [spawner_mecanum_drive_controller]: [92mConfigured and activated [1mmecanum_drive_controller[0m
+[spawner-6] [INFO] [1787023469.075344478] [spawner_joint_state_broadcaster]: [92mConfigured and activated [1mjoint_state_broadcaster[0m
+[INFO] [spawner-7]: process has finished cleanly [pid 724]
+[INFO] [spawner-6]: process has finished cleanly [pid 722]
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[ekf_node-5] [INFO] [1787102354.326078834] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[robot_state_publisher-2] [INFO] [1787102354.328113734] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[cmd_vel_to_twist_stamped-4] Traceback (most recent call last):
+[cmd_vel_to_twist_stamped-4]   File "/home/ros/ros2_ws/install/martha/lib/martha/cmd_vel_to_twist_stamped", line 33, in <module>
+[cmd_vel_to_twist_stamped-4]     sys.exit(load_entry_point('martha==0.0.0', 'console_scripts', 'cmd_vel_to_twist_stamped')())
+[cmd_vel_to_twist_stamped-4]   File "/home/ros/ros2_ws/install/martha/lib/python3.10/site-packages/martha/cmd_vel_to_twist_stamped.py", line 43, in main
+[cmd_vel_to_twist_stamped-4]     rclpy.shutdown()
+[cmd_vel_to_twist_stamped-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py", line 130, in shutdown
+[cmd_vel_to_twist_stamped-4]     _shutdown(context=context)
+[cmd_vel_to_twist_stamped-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/utilities.py", line 58, in shutdown
+[cmd_vel_to_twist_stamped-4]     return context.shutdown()
+[cmd_vel_to_twist_stamped-4]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/context.py", line 102, in shutdown
+[cmd_vel_to_twist_stamped-4]     self.__context.shutdown()
+[cmd_vel_to_twist_stamped-4] rclpy._rclpy_pybind11.RCLError: failed to shutdown: rcl_shutdown already called on the given context, at ./src/rcl/init.c:241
+[INFO] [robot_state_publisher-2]: process has finished cleanly [pid 231]
+[INFO] [ekf_node-5]: process has finished cleanly [pid 246]
+[ERROR] [cmd_vel_to_twist_stamped-4]: process has died [pid 242, exit code 1, cmd '/home/ros/ros2_ws/install/martha/lib/martha/cmd_vel_to_twist_stamped --ros-args -r __node:=cmd_vel_to_twist_stamped --params-file /tmp/launch_params_3i0koi5x'].
+[ERROR] [gzserver-1]: process[gzserver-1] failed to terminate '5' seconds after receiving 'SIGINT', escalating to 'SIGTERM'
+[INFO] [gzserver-1]: sending signal 'SIGTERM' to process[gzserver-1]
+[gzserver-1] [INFO] [1787102359.504232056] [rclcpp]: signal_handler(SIGINT/SIGTERM)

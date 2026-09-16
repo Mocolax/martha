@@ -1,7 +1,18 @@
 # PPO outputs are reproducible artifacts, not source files.
 martha/PPO/runs/
-ppo_runs/
+# Excludes the contents, not the directory itself: git refuses to descend into
+# an excluded directory, so a bare "ppo_runs/" would make the Best-* negations
+# below unreachable.
+martha/PPO/ppo_runs/*
 *.pt
+
+# ...except a run promoted to Best-*: those are the checkpoints the thesis
+# reports on, they cost hours of GPU time and a rerun does not reproduce them
+# (different RNG draw), so losing one is not recoverable. Both negations are
+# needed: the first lets git descend into the directory at all, the second
+# overrides the *.pt rule for the models inside it.
+!martha/PPO/ppo_runs/Best-*/
+!martha/PPO/ppo_runs/Best-*/**
 
 # Local Python and ROS build artifacts.
 __pycache__/
